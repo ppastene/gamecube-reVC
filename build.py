@@ -73,6 +73,20 @@ def setup_linux():
             os.chmod(script, 0o755)
             run(["sudo", "bash", script])
         dkp_install_groups()
+    elif shutil.which("dnf"):
+        run(["sudo", "dnf", "install", "-y", "cmake", "ninja-build"])
+        if not shutil.which("dkp-pacman"):
+            try:
+                dkp = find_devkitpro()
+                print(f"devkitPro already installed at {dkp}; "
+                      "skipping devkitPro setup.")
+            except SystemExit:
+                name, url = github_latest_asset("devkitPro/pacman", ".rpm")
+                rpm = download(url, name)
+                run(["sudo", "dnf", "install", "-y", rpm])
+                dkp_install_groups()
+        else:
+            dkp_install_groups()
     elif shutil.which("pacman"):
         run(["sudo", "pacman", "-S", "--needed", "--noconfirm", "cmake",
              "ninja"])
@@ -82,7 +96,7 @@ def setup_linux():
                   "if this fails: https://devkitpro.org/wiki/devkitPro_pacman")
         dkp_install_groups(pacman)
     else:
-        sys.exit("Neither apt-get nor pacman found; install devkitPro "
+        sys.exit("Neither apt-get, dnf nor pacman found; install devkitPro "
                  "manually: https://devkitpro.org/wiki/Getting_Started")
 
 
