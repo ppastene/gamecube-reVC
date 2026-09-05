@@ -126,6 +126,12 @@ every texture to GX-native formats, repacks `gta3.img` and lays out the
 card tree the game reads (`tools/gamecube/build_sd.py` does the asset
 work; `--game`, `--out`, `--audio` and `--movies` override the defaults).
 
+CAUTION:
+
+The path and filenames are case-sensitive. The folder GTAVC must be uppercase
+while its content like subfolders, filenames and their extensions must be lowercase.
+
+
 ## Running
 
 ### Dolphin
