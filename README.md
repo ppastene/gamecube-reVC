@@ -152,6 +152,40 @@ The audio files could be massive and if you're using a Gamecube disc maybe you c
 You can use the flag --keep-sfx-raw with the build.py sd to maintain the sfx.raw file uncompress.
 On the contrary, skipping that flag the script will call pack_sfx.py and it will compress the file.
 
+### Libtheora Drop-In replacement
+
+build.py sd calls tools/gamecube/encode_fmv to encode the movie files (the Logo.mpg and GTAtitles.mpg).
+The problem is a mismatch between the libtheora package and ffmpeg.
+If the build script encounters a problem to encode the video files, try this:
+
+```bash
+cat > /tmp/revc-encoder <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+Q=10; A=4; K=125; OUT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -q) shift ;;
+    -v) Q=10; shift 2 ;;
+    -a) A="$2"; shift 2 ;;
+    -k) K="$2"; shift 2 ;;
+    -o) OUT="$2"; shift 2 ;;
+    *) break ;;
+  esac
+done
+WAV="${1:?wav}"; Y4M="${2:?y4m}"
+exec /usr/bin/ffmpeg -loglevel error -i "$WAV" -i "$Y4M" \
+  -c:v libtheora -q:v "$Q" -g "$K" \
+  -c:a libvorbis -q:a "$A" -ar 44100 -ac 2 \
+  -f ogg -y "$OUT"
+EOF
+chmod +x /tmp/revc-encoder
+```
+
+And then copy to /usr/local/bin/encoder_example
+```bash
+sudo cp /tmp/revc-encoder /usr/local/bin/encoder_example
+```
 
 ## Running
 
