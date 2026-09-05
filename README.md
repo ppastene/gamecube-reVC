@@ -94,6 +94,21 @@ From devkitpro using pacman
 If devkitPro is installed somewhere non-standard, set the `DEVKITPRO`
 environment variable to its root.
 
+### Compiling libtheora
+
+Libtheora is a library required for the video encoding and is used in this project.
+You need to compile and use the encode-example project for the build.py sd command.
+
+In any folder aside of this repository, follow this instructions:
+
+curl -LO https://downloads.xiph.org/releases/theora/libtheora-1.2.0.tar.xz
+tar xJf libtheora-1.2.0.tar.xz
+cd libtheora-1.2.0
+make distclean
+./configure --disable-shared 
+make -j$(nproc) (this will compile everything)
+sudo cp examples/encoder_example /usr/local/bin/encoder_example
+
 ## Game data
 
 This repository contains no game assets. A legally owned copy of Grand
