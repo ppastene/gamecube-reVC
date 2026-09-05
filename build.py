@@ -145,6 +145,21 @@ def find_devkitpro():
     sys.exit("devkitPro not found. Install it (with GameCube/Wii packages) "
              "and/or set the DEVKITPRO environment variable.")
 
+# Helper to find and insert the dkp repositories
+# Needed in case of installing dkp on fedora
+def ensure_dkp_repos():
+    conf = "/etc/pacman.conf"
+    block = ("\n# FOR DEVKITPRO\n"
+             "[dkp-libs]\n"
+             "Server = https://pkg.devkitpro.org/packages\n\n"
+             "[dkp-linux]\n"
+             "Server = https://pkg.devkitpro.org/packages/linux/$arch/\n")
+    with open(conf, "r") as f:
+        exists = "[dkp-libs]" in f.read()
+    if not exists:
+        subprocess.run(["sudo", "tee", "-a", conf],
+                       input=block.encode(), check=True)
+
 
 def find_tool(name, dkp):
     tool = shutil.which(name)
