@@ -1,0 +1,9 @@
+.git
+build
+assets
+.github
+.vscode
+*.exe
+premake5Linux
+next_session_prompt.md
+*.md.orig
