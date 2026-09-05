@@ -73,20 +73,29 @@ def setup_linux():
             os.chmod(script, 0o755)
             run(["sudo", "bash", script])
         dkp_install_groups()
+
     elif shutil.which("dnf"):
-        run(["sudo", "dnf", "install", "-y", "cmake", "ninja-build"])
-        if not shutil.which("dkp-pacman"):
-            try:
-                dkp = find_devkitpro()
-                print(f"devkitPro already installed at {dkp}; "
-                      "skipping devkitPro setup.")
-            except SystemExit:
-                name, url = github_latest_asset("devkitPro/pacman", ".rpm")
-                rpm = download(url, name)
-                run(["sudo", "dnf", "install", "-y", rpm])
-                dkp_install_groups()
-        else:
-            dkp_install_groups()
+        try:
+            run(["sudo", "dnf", "install", "-y", "cmake", "ninja-build", "wget"])
+            if not shutil.which("pacman"):
+                print("Pacman is not installed in this OS. Installing.....")
+                run(["sudo", "dnf", "install", "-y", "pacman"])
+
+            # Instalamos las llaves
+            run(["sudo", "pacman-key", "--init"])
+            run(["sudo", "pacman-key", "--recv",
+                "BC26F752D25B92CE272E0F44F7FD5492264BB9D0",
+                "--keyserver", "keyserver.ubuntu.com"])
+            run(["sudo", "pacman-key", "--lsign",
+                "BC26F752D25B92CE272E0F44F7FD5492264BB9D0"])
+
+            ensure_dkp_repos()
+            dkp_install_groups("pacman")
+                
+        except:
+            sys.exit("Install devkitPro from the official documentation: "
+                    "https://devkitpro.org/wiki/devkitPro_pacman")
+            
     elif shutil.which("pacman"):
         run(["sudo", "pacman", "-S", "--needed", "--noconfirm", "cmake",
              "ninja"])
