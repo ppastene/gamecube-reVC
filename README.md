@@ -131,6 +131,27 @@ CAUTION:
 The path and filenames are case-sensitive. The folder GTAVC must be uppercase
 while its content like subfolders, filenames and their extensions must be lowercase.
 
+### Audio
+
+The project includes a script to encode the audio files into a ogg format.
+Use the following script to do so:
+
+```bash
+python3 tools/gamecube/convert_audio.py assets/GTAVC/audio assets/audio-ogg
+```
+
+Then you call the build.py script pointing to the folder with the generated audio
+
+```bash
+python3 build.py sd --audio assets/audio-ogg
+```
+
+NOTE:
+
+The audio files could be massive and if you're using a Gamecube disc maybe you cannot fit everything on it.
+You can use the flag --keep-sfx-raw with the build.py sd to maintain the sfx.raw file uncompress.
+On the contrary, skipping that flag the script will call pack_sfx.py and it will compress the file.
+
 
 ## Running
 
