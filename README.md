@@ -72,6 +72,9 @@ GameCube/Wii toolchains.
 - **Arch Linux** — `sudo pacman -S cmake ninja`, add the
   [devkitPro repositories](https://devkitpro.org/wiki/devkitPro_pacman) to
   `/etc/pacman.conf` and `sudo pacman -Sy gamecube-dev wii-dev`.
+  **Fedora** - `sudo dnf install cmake ninja-build`, then follow the instructions
+  to install [devkitPro Pacman](https://devkitpro.org/wiki/devkitPro_pacman)
+  and `sudo pacman -Sy gamecube-dev wii-dev`.
 - **Windows** — `winget install Kitware.CMake Ninja-build.Ninja`, then run
   the [devkitPro installer](https://github.com/devkitPro/installer/releases)
   and select the GameCube and Wii development packages.
