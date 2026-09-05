@@ -79,6 +79,18 @@ GameCube/Wii toolchains.
   the [devkitPro installer](https://github.com/devkitPro/installer/releases)
   and select the GameCube and Wii development packages.
 
+Aside of gamecube-dev and wii-dev dependencies, you still need the following:
+From your package manager:
+- libtool
+- nasm
+- gcc
+- c++
+- ffmpeg (ffmpeg-free in Fedora)
+- sox
+
+From devkitpro using pacman
+- ppc-libvorbisidec
+
 If devkitPro is installed somewhere non-standard, set the `DEVKITPRO`
 environment variable to its root.
 
