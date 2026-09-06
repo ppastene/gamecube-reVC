@@ -388,8 +388,10 @@ def main():
     print("card contents      : %.1f MiB of %.1f MiB" % (mb, args.size_mb))
     if mb > args.size_mb:
         print("OVER BUDGET by %.1f MiB" % (mb - args.size_mb))
-        return 1
-    print("headroom           : %.1f MiB" % (args.size_mb - mb))
+    else:
+        print("headroom           : %.1f MiB" % (args.size_mb - mb))
+    # Over-budget is a report, not a failure: the tree serves SD/Wii (no
+    # capacity limit) and disc builds alike, and build_iso is the hard gate.
     return 0
 
 
