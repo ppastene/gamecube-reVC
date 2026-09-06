@@ -72,7 +72,7 @@ GameCube/Wii toolchains.
 - **Arch Linux** — `sudo pacman -S cmake ninja`, add the
   [devkitPro repositories](https://devkitpro.org/wiki/devkitPro_pacman) to
   `/etc/pacman.conf` and `sudo pacman -Sy gamecube-dev wii-dev`.
-  **Fedora** - `sudo dnf install cmake ninja-build`, then follow the instructions
+- **Fedora** - `sudo dnf install cmake ninja-build`, then follow the instructions
   to install [devkitPro Pacman](https://devkitpro.org/wiki/devkitPro_pacman)
   and `sudo pacman -Sy gamecube-dev wii-dev`.
 - **Windows** — `winget install Kitware.CMake Ninja-build.Ninja`, then run
@@ -101,6 +101,7 @@ You need to compile and use the encode-example project for the build.py sd comma
 
 In any folder aside of this repository, follow this instructions:
 
+```bash
 curl -LO https://downloads.xiph.org/releases/theora/libtheora-1.2.0.tar.xz
 tar xJf libtheora-1.2.0.tar.xz
 cd libtheora-1.2.0
@@ -108,6 +109,7 @@ make distclean
 ./configure --disable-shared 
 make -j$(nproc) (this will compile everything)
 sudo cp examples/encoder_example /usr/local/bin/encoder_example
+```
 
 ## Game data
 
