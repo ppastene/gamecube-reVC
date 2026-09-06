@@ -244,8 +244,13 @@ def build_sd(args):
     cmd = [sys.executable,
            os.path.join(ROOT, "tools", "gamecube", "build_sd.py"),
            "--game", game, "--out", out,
-           "--txdconv", build_txdconv(), "--keep-sfx-raw"]
+           "--txdconv", build_txdconv()]
+    if args.keep_sfx_raw:
+        cmd.append("--keep-sfx-raw")
     audio = args.audio or os.path.join(ROOT, "assets", "audio-ogg")
+    inner = os.path.join(audio, "audio")
+    if os.path.isdir(inner):
+        audio = inner   # convert_audio escribe en un subdir audio/
     if os.path.isdir(audio):
         cmd += ["--audio", audio]
     movies = args.movies or os.path.join(ROOT, "assets", "movies")
@@ -271,6 +276,8 @@ def main():
                         help="install the build dependencies for this OS "
                              "(brew / apt / pacman / winget + devkitPro)")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--keep-sfx-raw", action="store_true",
+                help="keep the unpacked sample bank for an SD-only build")
     args = parser.parse_args()
     if args.self_test:
         assert callable(build) and callable(setup) and ROOT
