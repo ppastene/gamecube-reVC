@@ -420,6 +420,15 @@ panicPrintf(const char *fmt, ...)
 	}
 }
 
+#ifdef REVC_LIBOGC2
+// libogc2 has no tuxedo runtime: its startup does not install exception
+// vectors, so CPU-exception panics fall back to the runtime default while
+// software fatals still park via gcFatalPark. Supplying the global keeps the
+// assignment in gcInstallPanicHandler working. The stock-libogc build gets
+// the very same symbol (plus the wired vectors) from libogc.a instead.
+PPCExcptPanicFn PPCExcptCurPanicFn;
+#endif
+
 static void
 gcPanic(unsigned exid, PPCContext *ctx)
 {
@@ -745,10 +754,21 @@ psInstallFileSystem(void)
 		// boot to serve the rarer case. Put the game data on whichever one you
 		// want it read from - USB is the faster of the two on this machine by a
 		// wide margin, which matters for a game that streams hundreds of MB.
+		#ifdef REVC_LIBOGC2
+		// libogc2 dropped the const from the disc interfaces (their members
+		// are const) and fatMount() takes them non-const; stock libogc keeps
+		// the whole object const. Same slots, different cv-ness per runtime.
+		static DISC_INTERFACE *const sdSlots[] = { &__io_wiisd, &__io_usbstorage };
+#else
 		static const DISC_INTERFACE *const sdSlots[] = { &__io_wiisd, &__io_usbstorage };
+#endif
 		static const char *const sdNames[] = { "front SD", "USB storage" };
 #else
+#ifdef REVC_LIBOGC2
+		static DISC_INTERFACE *const sdSlots[] = { &__io_gcsda, &__io_gcsdb };
+#else
 		static const DISC_INTERFACE *const sdSlots[] = { &__io_gcsda, &__io_gcsdb };
+#endif
 		static const char *const sdNames[] = { "SD Gecko slot A", "SD Gecko slot B" };
 #endif
 		for(size_t i = 0; i < sizeof(sdSlots)/sizeof(sdSlots[0]); i++){

@@ -83,6 +83,20 @@ if(NINTENDO_OGC)
     # Cost: a crash walks the stack with the frame-pointer chain instead of
     # unwind tables, which gcPanic already does by hand (it follows frame[0]).
     add_compile_options(-fno-exceptions -fno-rtti -fno-asynchronous-unwind-tables)
+    # binutils>=2.46 rejects R_PPC_SDAREL16 for symbols outside .sdata/.sbss
+    # (wgPipe lives in .sdata2 in stock libogc and in .data in libogc2), so
+    # small-data addressing for the app and librw is disabled.
+    add_compile_options(-msdata=none)
+    # libogc2 dropped the *_WithArg AESND calls and 3-arg voice callbacks; the
+    # guard keeps the stock-libogc path alive so reverting to ogc-cmake with
+    # DKP_OGC_PLATFORM_LIBRARY=libogc needs no source edits.
+    if(NOT DKP_OGC_PLATFORM_LIBRARY OR DKP_OGC_PLATFORM_LIBRARY STREQUAL "libogc2")
+        add_compile_definitions(REVC_LIBOGC2)
+    endif()
+    # libogc2 does not ship the tuxedo exception headers (libogc 3.x folded
+    # them into its include tree); the vendored copies keep <tuxedo/...>
+    # resolving for both runtimes and are bit-for-bit from libogc 3.1.0.
+    include_directories(${CMAKE_SOURCE_DIR}/vendor/portlibs/tuxedo/include)
 endif()
 
 option(${PROJECT}_VENDORED_LIBRW "Use vendored librw" ON)

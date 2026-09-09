@@ -1,5 +1,20 @@
 #define _GNU_SOURCE 1
 #include <ogc/dvd.h>
+// libogc2 renamed the priority read to DVD_ReadAbsPrio with the exact same
+// signature; alias it so the drive access below stays single-sourced.
+#ifdef REVC_LIBOGC2
+#define DVD_ReadPrio DVD_ReadAbsPrio
+#endif
+// libogc2's disc_interface passes the interface as the first argument of every
+// callback; stock libogc still uses the legacy self-less signatures. Expand to
+// empty under stock so the call sites below stay single-sourced.
+#ifdef REVC_LIBOGC2
+#define IFACE_SELF_ARG(obj) (DISC_INTERFACE*)(obj),
+#define IFACE_SELF_ONLY(obj) (DISC_INTERFACE*)(obj)
+#else
+#define IFACE_SELF_ARG(obj)
+#define IFACE_SELF_ONLY(obj)
+#endif
 /****************************************************************************
  * ISO9660 devoptab
  * 
@@ -869,9 +884,9 @@ static struct pvd_s* read_volume_descriptor(MOUNT_DESCR *mdescr, u8 descriptor)
 
 	for (sector = 16; sector < 32; sector++)
 	{
-		if (!disc->readSectors(sector, 1, mdescr->read_buffer))
+		if (!disc->readSectors(IFACE_SELF_ARG(disc) sector, 1, mdescr->read_buffer))
 			return NULL;
-		if (!disc->readSectors(sector, 1, mdescr->read_buffer))
+		if (!disc->readSectors(IFACE_SELF_ARG(disc) sector, 1, mdescr->read_buffer))
 			return NULL;
 		if (!memcmp(mdescr->read_buffer + 1, "CD001\1", 6))
 		{
@@ -991,11 +1006,11 @@ bool ISO9660_MountDbg(const char* name, const DISC_INTERFACE *disc_interface)
 	if (!name || strlen(name) > 8 || !disc_interface)
 		return false;
 
-	if (!disc_interface->startup()){
+	if (!disc_interface->startup(IFACE_SELF_ONLY(disc_interface))){
 		printf("iso: startup failed\n");
 		return false;
 	}
-	if (!disc_interface->isInserted()){
+	if (!disc_interface->isInserted(IFACE_SELF_ONLY(disc_interface))){
 		printf("iso: not inserted\n");
 		return false;
 	}

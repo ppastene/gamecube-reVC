@@ -7,6 +7,12 @@
 // GC build only: the Wii dev build keeps dvd:/userfiles on the SD card.
 #ifndef HW_RVL
 
+// libogc2 renamed CARD_WORKAREA_SIZE to CARD_WORKAREA (same value); keep the
+// stock spelling local so this file builds against either runtime.
+#ifdef REVC_LIBOGC2
+#define CARD_WORKAREA_SIZE CARD_WORKAREA
+#endif
+
 #include <gccore.h>
 #include <ogc/card.h>
 #include <ogc/system.h>

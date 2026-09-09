@@ -143,11 +143,20 @@ enum { GC_GENERIC_VOICES = GC_CHANNEL_VOICES - 1 };
 // callback runs on the audio thread and only ever clears the flag, which is
 // why a plain volatile bool is enough — there is no read-modify-write to race.
 static void
+#ifdef REVC_LIBOGC2
+gcVoiceCallback(AESNDPB *pb, u32 state)
+#else
 gcVoiceCallback(AESNDPB *pb, u32 state, void *arg)
+#endif
 {
 	(void)pb;
-	if(state == VOICE_STATE_STOPPED)
+	if(state == VOICE_STATE_STOPPED){
+#ifdef REVC_LIBOGC2
+		((GcChannel*)AESND_GetVoiceUserData(pb))->playing = FALSE;
+#else
 		((GcChannel*)arg)->playing = FALSE;
+#endif
+	}
 }
 
 // The sample index, read once from sfx.sdt. tSample is what the game already
@@ -490,14 +499,27 @@ cSampleManager::Initialise(void)
 	// held-back voice goes to the police radio's fixed slot (see
 	// GC_GENERIC_VOICES above).
 	for(int32 i = 0; i < GC_GENERIC_VOICES; i++){
+#ifdef REVC_LIBOGC2
+		gChannels[i].voice = AESND_AllocateVoice(gcVoiceCallback);
+		if(gChannels[i].voice)
+			AESND_SetVoiceUserData(gChannels[i].voice, &gChannels[i]);
+#else
 		gChannels[i].voice = AESND_AllocateVoiceWithArg(gcVoiceCallback, &gChannels[i]);
+#endif
 		if(gChannels[i].voice)
 			AESND_SetVoiceStop(gChannels[i].voice, true);
 	}
 	{
 		GcChannel *pc = &gChannels[CHANNEL_POLICE_RADIO];
-		if(pc->voice == nil)
+		if(pc->voice == nil){
+#ifdef REVC_LIBOGC2
+			pc->voice = AESND_AllocateVoice(gcVoiceCallback);
+			if(pc->voice)
+				AESND_SetVoiceUserData(pc->voice, pc);
+#else
 			pc->voice = AESND_AllocateVoiceWithArg(gcVoiceCallback, pc);
+#endif
+		}
 		if(pc->voice)
 			AESND_SetVoiceStop(pc->voice, true);
 	}
@@ -1501,7 +1523,11 @@ gcStreamDecMain(void *)
 }
 
 static void
+#ifdef REVC_LIBOGC2
+gcStreamCallback(AESNDPB *pb, u32 state)
+#else
 gcStreamCallback(AESNDPB *pb, u32 state, void *arg)
+#endif
 {
 	// The DSP finished its buffer and wants the next one NOW. Waiting for the
 	// next game frame to provide it stretches every chunk by half a frame —
@@ -1509,7 +1535,11 @@ gcStreamCallback(AESNDPB *pb, u32 state, void *arg)
 	// from a chunk the game thread decoded ahead of time. No file I/O on this
 	// thread; if the pump has not caught up, AESND replays the stale chunk
 	// and the counter says so.
+#ifdef REVC_LIBOGC2
+	GcStream *st = (GcStream*)AESND_GetVoiceUserData(pb);
+#else
 	GcStream *st = (GcStream*)arg;
+#endif
 	if(state != VOICE_STATE_STREAM)
 		return;
 	st->cbCount++;
@@ -2256,7 +2286,13 @@ cSampleManager::StartStreamedFile(tTrack nFile, uint32 nPos, uint8 nStream)
 	}
 
 	if(st->voice == nil){
+#ifdef REVC_LIBOGC2
+		st->voice = AESND_AllocateVoice(gcStreamCallback);
+		if(st->voice)
+			AESND_SetVoiceUserData(st->voice, st);
+#else
 		st->voice = AESND_AllocateVoiceWithArg(gcStreamCallback, st);
+#endif
 		if(st->voice == nil){ fclose(st->file); st->file = nil; return FALSE; }
 	}
 	for(int32 i = 0; i < 2; i++)

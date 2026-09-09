@@ -462,9 +462,17 @@ struct MovieAudio {
 };
 
 static void
+#ifdef REVC_LIBOGC2
+movieAudioCallback(AESNDPB *voice, u32 state)
+#else
 movieAudioCallback(AESNDPB *voice, u32 state, void *arg)
+#endif
 {
+#ifdef REVC_LIBOGC2
+	MovieAudio *audio = (MovieAudio*)AESND_GetVoiceUserData(voice);
+#else
 	MovieAudio *audio = (MovieAudio*)arg;
+#endif
 	if(state == VOICE_STATE_STOPPED){
 		audio->stopped = true;
 		return;
@@ -496,7 +504,13 @@ movieAudioCreate(MovieAudio *audio)
 			return false;
 		memset(audio->buffer[i], 0, MOVIE_AUDIO_BYTES);
 	}
+	#ifdef REVC_LIBOGC2
+	audio->voice = AESND_AllocateVoice(movieAudioCallback);
+	if(audio->voice)
+		AESND_SetVoiceUserData(audio->voice, audio);
+#else
 	audio->voice = AESND_AllocateVoiceWithArg(movieAudioCallback, audio);
+#endif
 	return audio->voice != nil;
 }
 
@@ -510,7 +524,7 @@ movieAudioDestroy(MovieAudio *audio)
 			for(int frame = 0; frame < 4 && !audio->stopped; frame++)
 				VIDEO_WaitVSync();
 		}
-		AESND_RegisterVoiceCallbackWithArg(audio->voice, nil, nil);
+		AESND_RegisterVoiceCallback(audio->voice, nil);
 		AESND_FreeVoice(audio->voice);
 	}
 	free(audio->buffer[0]);
