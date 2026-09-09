@@ -12,8 +12,10 @@ build, which enforces the same limits.
 
 Work in progress.
 
-- The game boots and plays from an **SD card** (Wii homebrew loader, or
-  Dolphin).
+- The game boots and plays from an **SD card** (Wii homebrew loader, Dolphin
+  as a Wii homebrew, or on a real GameCube via Swiss/GCMM over SDGecko or
+  SD2SP2).
+- Playing the game on real hardware either Gamecube or Wii is not being tested yet. 
 - Generating a mini-DVD **ISO that boots on a real GameCube does not work
   yet**. The ISO9660 path runs under Dolphin, but real-hardware disc boot is
   an open problem.
@@ -33,7 +35,8 @@ Work in progress.
   the game frame. Mixing uses AESND's 32 hardware voices. Mission speech
   (IMA ADPCM) is cached in ARAM. FMVs are decoded with Theora.
 - **Filesystem and streaming** — an ISO9660 driver written for this port
-  (`src/skel/gamecube/dvdfs.c`) plus libfat SD support, with sector-aligned
+  (`src/skel/gamecube/dvdfs.c`). For SD support it uses libogc2
+  with support ofr FAT, FAT32 and exFAT formats, also with sector-aligned
   DMA reads and a streaming layer tuned for the 24 MB memory budget.
 - **Frontend** — a GameCube controls page with a 3D controller model, and
   help boxes that display the port's actual button bindings as coloured
@@ -46,7 +49,15 @@ git clone --recursive https://github.com/origami-ltd/gamecube-reVC.git
 cd gamecube-reVC
 python3 build.py --setup    # installs the dependencies for your OS
 python3 build.py            # GameCube DOL -> build/cube/src/reVC.dol
-python3 build.py wii        # Wii dev DOL  -> build/wii/src/reVC.dol
+python3 build.py wii        # Wii DOL  -> build/wii/src/reVC.dol
+```
+
+`--video` selects the GameCube video mode (`cube` only; the Wii build ignores
+it): `composite` (default, 480i, DOL-101) or `progressive` (480p, GCHD). The
+mode is baked into the build — changing it requires a rebuild.
+
+```bash
+python3 build.py --video progressive
 ```
 
 The same commands work on macOS, Linux and Windows. `--setup` uses the
@@ -88,7 +99,29 @@ From your package manager:
 - ffmpeg (ffmpeg-free in Fedora)
 - sox
 
-From devkitpro using pacman
+#### DevKitPro dependencies
+- [libogc2 (Extrems's fork)](https://github.com/extremscorner/libogc2/)
+
+On you pacman.conf file add this line BEFORE [dkp-libs]
+
+```bash
+[libogc2-devkitpro]
+Server = https://packages.libogc2.org/devkitpro/linux/$arch  (macos/$arch if using macOS, windows/$arch if using Windows)
+```
+
+Then run the commands to set the GPG key. Make sure to type the correct command according to your OS.
+
+```bash
+sudo (dkp-)pacman-key --recv-keys C8A2759C315CFBC3429CC2E422B803BA8AA3D7CE --keyserver keyserver.ubuntu.com
+sudo (dkp-)pacman-key --lsign-key C8A2759C315CFBC3429CC2E422B803BA8AA3D7CE
+```
+
+Finally install with pacman. With it also select libogc2-libdvm as fs provider
+
+```bash
+sudo (dkp-)pacman -S libogc2 libogc2-cmake
+```
+
 - ppc-libvorbisidec
 
 If devkitPro is installed somewhere non-standard, set the `DEVKITPRO`
