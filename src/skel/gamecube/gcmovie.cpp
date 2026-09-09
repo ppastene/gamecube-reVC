@@ -13,6 +13,7 @@
 #include <string.h>
 #include <theora/theoradec.h>
 #include <tremor/ivorbiscodec.h>
+#include <unistd.h>
 
 extern void GeckoLog(const char *msg);
 extern "C" void CdStreamFsLock(void);
@@ -51,6 +52,14 @@ movieTrace(const char *line)
 	// this reaches Dolphin/hardware diagnostics without touching the XFB.
 	printf("%s\n", line);
 	GeckoLog(line);
+	// Boot FMV diagnostics also land on the SD (dvd:/fmv.log, appended like
+	// dvd:/autocar.log) for decks without a USB Gecko. Every caller already
+	// holds the disc-I/O lock, so no extra FsGuard here.
+	FILE *log = fopen("dvd:/fmv.log", "a");
+	if(log){
+		fprintf(log, "%s\n", line);
+		fclose(log);
+	}
 }
 
 struct FsGuard {
@@ -663,10 +672,35 @@ movieFrameToXfb(const MovieDecoder *movie, void *xfb,
 	const th_img_plane &crPlane = movie->frame[2];
 	uint32 pictureWidth = movie->videoInfo.pic_width;
 	uint32 pictureHeight = movie->videoInfo.pic_height;
-	uint32 top = (outputHeight - pictureHeight) / 2;
 	uint32 left = (outputWidth - pictureWidth) / 2;
 	uint32 pictureX = movie->videoInfo.pic_x;
 	uint32 pictureY = movie->videoInfo.pic_y;
+	// 480i is a half-height XFB: the interlaced VI field-doubles the stored
+	// rows, so a 480-row progressive decode scales 2:1 into it. Blend each
+	// pair of source rows for luma (reduces interlace shimmer vs a pure
+	// subsample); chroma is already vertically quarter-sampled, so the even
+	// source row is both.
+	if(pictureHeight > outputHeight){
+		for(uint32 y = 0; y < outputHeight; y++){
+			uint32 srcRow = pictureY + y * pictureHeight / outputHeight;
+			uint32 *dst = (uint32*)xfb + y * (outputWidth / 2) + left / 2;
+			const uint8 *above = yPlane.data + srcRow * yPlane.stride + pictureX;
+			const uint8 *below = srcRow + 1 < pictureHeight ?
+			    above + yPlane.stride : above;
+			const uint8 *cb = cbPlane.data + (srcRow >> 1) * cbPlane.stride +
+			    (pictureX >> 1);
+			const uint8 *cr = crPlane.data + (srcRow >> 1) * crPlane.stride +
+			    (pictureX >> 1);
+			for(uint32 x = 0; x < pictureWidth; x += 2){
+				uint8 y0 = ((uint16)above[x] + below[x]) >> 1;
+				uint8 y1 = ((uint16)above[x + 1] + below[x + 1]) >> 1;
+				*dst++ = (uint32)y0 << 24 | (uint32)cb[x >> 1] << 16 |
+				         (uint32)y1 << 8 | cr[x >> 1];
+			}
+		}
+		return;
+	}
+	uint32 top = (outputHeight - pictureHeight) / 2;
 	for(uint32 y = 0; y < pictureHeight; y++){
 		uint32 *dst = (uint32*)xfb + (top + y) * (outputWidth / 2) + left / 2;
 		const uint8 *luma = yPlane.data + (pictureY + y) * yPlane.stride + pictureX;
@@ -797,7 +831,10 @@ bool
 PlayGameCubeMovie(const char *path, void *bootFramebuffer,
     unsigned width, unsigned height, unsigned framebufferBytes)
 {
-	if(path == nil || bootFramebuffer == nil || width != 640 || height < 480 ||
+	// Progressive XFBs are 480 rows high, interlaced ones 240 (the VI field-
+	// doubles them), so either fits a 640x480 decode; movieFrameToXfb scales
+	// 2:1 for the interlaced case.
+	if(path == nil || bootFramebuffer == nil || width != 640 || height < 240 ||
 	   framebufferBytes < width * height * VI_DISPLAY_PIX_SZ)
 		return false;
 
@@ -811,6 +848,24 @@ PlayGameCubeMovie(const char *path, void *bootFramebuffer,
 	VIDEO_WaitVSync();
 
 	FsGuard fs;
+	// Probe whether the C heap can still grow: the preflight below needs 2.3MB
+	// of contiguous heap, and a boot that only handed malloc ~4MB (mostly eaten
+	// by the engine) parks even on 480p. arena1 bounds the toolchain's sbrk.
+	{
+		char probe[224];
+		snprintf(probe, sizeof(probe),
+		    "FMV probe arena1=%08x..%08x mallinfo arena=%uK",
+		    (unsigned)SYS_GetArena1Lo(), (unsigned)SYS_GetArena1Hi(),
+		    (unsigned)mallinfo().arena / 1024);
+		movieTrace(probe);
+		void *grown = sbrk(4 * 1024 * 1024);
+		if(grown == (void*)-1)
+			movieTrace("FMV probe sbrk(4MB) fail");
+		else{
+			movieTrace("FMV probe sbrk(4MB) ok");
+			sbrk(-(4 * 1024 * 1024));
+		}
+	}
 	struct mallinfo before = mallinfo();
 	char line[320];
 	snprintf(line, sizeof(line),

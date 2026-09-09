@@ -10,6 +10,10 @@
 // Freeze watchdog breadcrumb (gamecube.cpp). The frame-phase markers narrowed
 // the hang to DoRWStuffEndOfFrame; these narrow it inside the menu itself.
 extern const char *gPhase;
+// Frontend-shutdown step trace to dvd:/unload.log (gamecube.cpp). The NEW GAME
+// transition froze inside the menu teardown; each marker is the last call that
+// returned, so the missing one is the hang. Gated by GTA_OGC at the call sites.
+extern void gcTraceMarker(const char *tag);
 #include "Font.h"
 #include "Pad.h"
 #include "Text.h"
@@ -5856,6 +5860,9 @@ CMenuManager::SwitchMenuOnAndOff()
 				CPad::StopPadsShaking();
 #endif
 			} else {
+#ifdef GTA_OGC
+				gcTraceMarker("S0 deactivate");
+#endif
 #ifdef EXTENDED_COLOURFILTER
 				// we always expect CPostFX to be open
 				CMBlur::BlurOn = true;
@@ -5877,10 +5884,16 @@ CMenuManager::SwitchMenuOnAndOff()
 				else
 					CMBlur::MotionBlurClose();
 #endif
+#ifdef GTA_OGC
+				gcTraceMarker("S1 before 2 frames");
+#endif
 				DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255);
 				DoRWStuffEndOfFrame();
 				DoRWStuffStartOfFrame(0, 0, 0, 0, 0, 0, 255);
 				DoRWStuffEndOfFrame();
+#ifdef GTA_OGC
+				gcTraceMarker("S2 after 2 frames");
+#endif
 				if (_InputMouseNeedsExclusive()) {
 					_InputShutdownMouse();
 					_InputInitialiseMouse(true);
@@ -5913,10 +5926,16 @@ CMenuManager::SwitchMenuOnAndOff()
 				CPad::GetPad(0)->OldState.Start = start3;
 				CPad::GetPad(0)->NewState.Start = start4;
 #endif
+#ifdef GTA_OGC
+				gcTraceMarker("S3 before UnloadTextures");
+#endif
 				UnloadTextures();
 				CTimer::EndUserPause();
 				CTimer::Update();
 				m_OnlySaveMenu = false;
+#ifdef GTA_OGC
+				gcTraceMarker("S4 deactivate done");
+#endif
 			}
 		}
 	}
@@ -5969,7 +5988,9 @@ CMenuManager::UnloadTextures()
 {
 #ifdef GTA_OGC
 	gPhase = "menu-unloadtex";
+	gcTraceMarker("U1 UnloadController");
 	UnloadController();
+	gcTraceMarker("U2 clump+controllerTXD done");
 #endif
 	if (m_nCurrScreen == MENUPAGE_SOUND_SETTINGS)
 		DMAudio.StopFrontEndTrack();
@@ -5986,19 +6007,37 @@ CMenuManager::UnloadTextures()
 	}
 #endif
 	if (m_bSpritesLoaded) {
+#ifdef GTA_OGC
+		gcTraceMarker("U3 before frontend1 sprites");
+#endif
 		printf("REMOVE frontend\n");
 		int frontend = CTxdStore::FindTxdSlot("frontend1");
 		for (int i = 0; i < 3; ++i)
 			m_aFrontEndSprites[i].Delete();
 
+#ifdef GTA_OGC
+		gcTraceMarker("U4 before RemoveTxd(frontend1)");
+#endif
 		CTxdStore::RemoveTxd(frontend);
+#ifdef GTA_OGC
+		gcTraceMarker("U5 frontend1 removed");
+#endif
 
 		if (!m_OnlySaveMenu) {
 			int frontend2 = CTxdStore::FindTxdSlot("frontend2");
+#ifdef GTA_OGC
+			gcTraceMarker("U6 before frontend2 sprites");
+#endif
 			for (int i = 3; i < NUM_MENU_SPRITES; ++i)
 				m_aFrontEndSprites[i].Delete();
 
+#ifdef GTA_OGC
+			gcTraceMarker("U7 before RemoveTxd(frontend2)");
+#endif
 			CTxdStore::RemoveTxd(frontend2);
+#ifdef GTA_OGC
+			gcTraceMarker("U8 frontend2 removed");
+#endif
 
 #ifdef GAMEPAD_MENU
 			// Unload controller txd
@@ -6008,10 +6047,16 @@ CMenuManager::UnloadTextures()
 #endif
 		}
 
+#ifdef GTA_OGC
+		gcTraceMarker("U9 before PlaceName");
+#endif
 		m_bSpritesLoaded = false;
 	}
 	m_OnlySaveMenu = false;
 	CUserDisplay::PlaceName.ProcessAfterFrontEndShutDown();
+#ifdef GTA_OGC
+	gcTraceMarker("U10 UnloadTextures done");
+#endif
 }
 
 void

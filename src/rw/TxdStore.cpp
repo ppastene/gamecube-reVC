@@ -54,8 +54,24 @@ void
 CTxdStore::RemoveTxdSlot(int slot)
 {
 	TxdDef *def = GetSlot(slot);
+#ifdef GTA_OGC
+	// Frontend teardown trace (gamecube.cpp -> dvd:/unload.log): pin whether
+	// the NEW GAME hang sits inside RwTexDictionaryDestroy of a menu TXD.
+	if(strncmp(def->name, "frontend", 8) == 0){
+		extern void gcTraceMarker(const char *tag);
+		char tag[64];
+		snprintf(tag, sizeof(tag), "D-TXD %s in", def->name);
+		gcTraceMarker(tag);
+		if(def->texDict)
+			RwTexDictionaryDestroy(def->texDict);
+		snprintf(tag, sizeof(tag), "D-TXD %s out", def->name);
+		gcTraceMarker(tag);
+	}else if(def->texDict)
+		RwTexDictionaryDestroy(def->texDict);
+#else
 	if(def->texDict)
 		RwTexDictionaryDestroy(def->texDict);
+#endif
 	ms_pTxdPool->Delete(def);
 }
 

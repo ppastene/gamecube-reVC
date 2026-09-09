@@ -328,6 +328,39 @@ watchdogMain(void*)
 	return nil;
 }
 
+/*
+ * Frontend shutdown trace. The NEW GAME transition wedges somewhere inside
+ * the menu teardown (hang watchdog: phase=menu-unloadtex, tick frozen, GP
+ * idle, FS free), and the watchdog only says WHERE the thread is not. These
+ * markers, written with the same try-lock so they can never block the wall-
+ * clock of the hang, pin the last call that returned. Truncated on the first
+ * successful write of each boot.
+ */
+void
+gcTraceMarker(const char *tag)
+{
+	printf("TRACE %s\n", tag);
+	static bool truncated;
+	if(!truncated){
+		if(CdStreamFsTryLock()){
+			FILE *f = fopen("dvd:/unload.log", "w");
+			if(f)
+				fclose(f);
+			CdStreamFsUnlock();
+			truncated = true;
+		}
+		return;
+	}
+	if(CdStreamFsTryLock()){
+		FILE *f = fopen("dvd:/unload.log", "a");
+		if(f){
+			fprintf(f, "%u %s\n", (unsigned)gFrameTick, tag);
+			fclose(f);
+		}
+		CdStreamFsUnlock();
+	}
+}
+
 static void *framebuffer;
 static GXRModeObj *videoMode;
 static psGlobalType platformState;
@@ -1321,10 +1354,14 @@ main(int, char *[])
 					        VIDEO_GetFrameBufferSize(videoMode)));
 					AESND_Pause(true);
 					AESND_Reset();
+					// A present-but-unplayable movie (typically no heap for the
+					// theora/vorbis decoders on this boot state) just prints why
+					// and continues, like the no-movies path below; parking the
+					// whole boot here would brick it on every composite/480i run.
 					if(!titlesPlayed)
-						gcFatalPark("FMV", "titles.ogv read/decode failed; check OSReport\n");
+						printf("FMV: titles.ogv present but unplayable; continuing to splash\n");
 					if(!openingPlayed)
-						gcFatalPark("FMV", "opening.ogv read/decode failed; check OSReport\n");
+						printf("FMV: opening.ogv present but unplayable; continuing to splash\n");
 				}else
 					printf("FMV: image has no movies; continuing to splash\n");
 			}
