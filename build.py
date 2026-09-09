@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,15 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DKP_GROUPS = ["gamecube-dev", "wii-dev"]
+# Per-OS repos needed on top of the shared [dkp-libs] one: repo name and the
+# server path suffix under https://pkg.devkitpro.org/packages.
+DKP_REPO_HOSTS = {
+    "linux": ("dkp-linux", "linux/$arch/"),
+    "macos": ("dkp-macos", "macos/$arch/"),
+    "windows": ("dkp-windows", "windows/$arch/"),
+}
+LIBRW_SRC = os.path.join(ROOT, "vendor", "librw")
+GX_FORCE_RE = re.compile(r"^(#define\s+GX_FORCE_PROGRESSIVE\s+)\w+")
 
 
 def run(cmd, **kw):
@@ -59,6 +69,7 @@ def setup_macos():
         name, url = github_latest_asset("devkitPro/pacman", ".pkg")
         pkg = download(url, name)
         run(["sudo", "installer", "-pkg", pkg, "-target", "/"])
+    ensure_dkp_repos()
     dkp_install_groups()
 
 
@@ -126,6 +137,7 @@ def setup_windows():
     else:
         print("devkitPro found at C:/devkitPro; run the devkitPro updater "
               "to add gamecube-dev and wii-dev if they are missing.")
+    ensure_dkp_repos()
 
 
 def setup():
@@ -145,29 +157,88 @@ def setup():
     print("\nSetup done. Now run: python3 build.py")
 
 
-def find_devkitpro():
+def find_devkitpro(required=True):
     for candidate in (os.environ.get("DEVKITPRO"), "/opt/devkitpro",
                       "C:/devkitPro", "C:\\devkitPro"):
         if candidate and os.path.isfile(
                 os.path.join(candidate, "cmake", "ogc-common.cmake")):
             return candidate.replace("\\", "/")
+    if not required:
+        return None
     sys.exit("devkitPro not found. Install it (with GameCube/Wii packages) "
              "and/or set the DEVKITPRO environment variable.")
 
-# Helper to find and insert the dkp repositories
-# Needed in case of installing dkp on fedora
+
+def dkp_pacman_conf(host):
+    """Return this OS's pacman.conf, or None when devkitPro is not found."""
+    if host == "linux":
+        return "/etc/pacman.conf"
+    dkp = find_devkitpro(required=False)
+    if host == "macos":
+        return (os.path.join(dkp, "pacman", "etc", "pacman.conf")
+                if dkp else None)
+    # windows: devkitPro ships its own MSYS2 beside the SDK; fall back to a
+    # manual MSYS2 install.
+    roots = [dkp, os.environ.get("DEVKITPRO"), "C:/devkitPro", "C:\\devkitPro"]
+    confs = [os.path.join(root, rel, "etc", "pacman.conf")
+             for root in roots if root
+             for rel in ("MSYS2", "msys64")]
+    confs += [os.path.join(root, "etc", "pacman.conf")
+              for root in ("C:/msys64", "C:/msys2")]
+    return next((conf for conf in confs if os.path.isfile(conf)), None)
+
+
 def ensure_dkp_repos():
-    conf = "/etc/pacman.conf"
-    block = ("\n# FOR DEVKITPRO\n"
-             "[dkp-libs]\n"
-             "Server = https://pkg.devkitpro.org/packages\n\n"
-             "[dkp-linux]\n"
-             "Server = https://pkg.devkitpro.org/packages/linux/$arch/\n")
-    with open(conf, "r") as f:
-        exists = "[dkp-libs]" in f.read()
-    if not exists:
-        subprocess.run(["sudo", "tee", "-a", conf],
-                       input=block.encode(), check=True)
+    """Add the devkitPro pacman repositories for this OS.
+
+    The devkitPro installer preconfigures them ([dkp-libs] plus the per-OS
+    repo), so this is a silent safety net that only appends what is missing;
+    the one case that really needs it is Fedora, whose setup_linux uses the
+    system pacman. macOS and Windows keep their own pacman.conf inside the
+    devkitPro installation.
+    """
+    if platform.system() == "Linux":
+        host, sudo = "linux", True
+    elif platform.system() == "Darwin":
+        host, sudo = "macos", True
+    elif platform.system() == "Windows":
+        host, sudo = "windows", False
+    else:
+        sys.exit(f"unsupported OS: {platform.system()}")
+    conf = dkp_pacman_conf(host)
+    if not conf:
+        print("devkitPro pacman.conf not found; add the devkitPro repositories "
+              "manually (see the README for your OS).")
+        return
+    try:
+        with open(conf, errors="replace") as f:
+            content = f.read()
+    except OSError as error:
+        print(f"cannot read {conf} ({error}); add the devkitPro repositories "
+              "manually (see the README for your OS).")
+        return
+
+    repo, path = DKP_REPO_HOSTS[host]
+    missing = []
+    if "[dkp-libs]" not in content:
+        missing.append("[dkp-libs]\n"
+                       "Server = https://pkg.devkitpro.org/packages")
+    if f"[{repo}]" not in content:
+        missing.append(f"[{repo}]\n"
+                       f"Server = https://pkg.devkitpro.org/packages/{path}")
+    if not missing:
+        return
+    block = "\n# FOR DEVKITPRO\n" + "\n\n".join(missing) + "\n"
+    try:
+        with open(conf, "a") as f:
+            f.write(block)
+    except PermissionError:
+        if sudo:
+            subprocess.run(["sudo", "tee", "-a", conf],
+                           input=block.encode(), check=True)
+        else:
+            print(f"cannot write {conf}; add the devkitPro repositories "
+                  "manually (see the README for your OS).")
 
 
 def find_tool(name, dkp):
@@ -181,7 +252,36 @@ def find_tool(name, dkp):
     sys.exit(f"{name} not found on PATH; install it or add it to PATH.")
 
 
-def build(target, dkp, cmake, ninja):
+def gx_patch(video):
+    """Bake the GameCube video mode into the pinned librw submodule.
+
+    vendor/librw/src/gx/gx.cpp hard-defines GX_FORCE_PROGRESSIVE=1 with no
+    #ifndef guard, so no -D can override it: the value can only be baked at
+    compile time by editing that file. The cube build is 480i composite, so
+    the one line is re-written transiently and always restored in a finally,
+    leaving the submodule working tree pristine on success and on failure
+    alike. Its HEAD and commits are never touched.
+    """
+    value = 1 if video == "progressive" else 0
+    gx = os.path.join(LIBRW_SRC, "src", "gx", "gx.cpp")
+    with open(gx) as f:
+        lines = f.readlines()
+    for i, line in enumerate(lines):
+        if GX_FORCE_RE.match(line):
+            lines[i] = GX_FORCE_RE.sub(rf"\g<1>{value}", line)
+            break
+    else:
+        sys.exit("{}: GX_FORCE_PROGRESSIVE define not found".format(gx))
+    with open(gx, "w") as f:
+        f.writelines(lines)
+
+
+def gx_restore():
+    subprocess.run(["git", "-C", LIBRW_SRC, "restore", "--", "src/gx/gx.cpp"],
+                   check=True)
+
+
+def build(target, dkp, cmake, ninja, video):
     if target == "cube":
         toolchain = f"{dkp}/cmake/GameCube.cmake"
     else:
@@ -190,16 +290,27 @@ def build(target, dkp, cmake, ninja):
     build_dir = os.path.join(ROOT, "build", target)
     os.makedirs(build_dir, exist_ok=True)
     env = dict(os.environ, DEVKITPRO=dkp)
-    if not os.path.isfile(os.path.join(build_dir, "build.ninja")):
-        subprocess.run([
-            cmake, "-G", "Ninja", "-S", ROOT, "-B", build_dir,
-            "-DCMAKE_BUILD_TYPE=Release",
-            f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
-            "-DLIBRW_PLATFORM=GAMECUBE",
-            "-DREVC_THEORA_ROOT=" + os.path.join(ROOT, "vendor", "portlibs",
-                                                 "ppc"),
-        ], check=True, env=env)
-    subprocess.run([ninja, "-C", build_dir], check=True, env=env)
+    patched = target == "cube"
+    if patched:
+        # Clean the file even if a previous run was interrupted mid-build,
+        # then rewrite it for the chosen mode for the duration of this build.
+        gx_restore()
+        gx_patch(video)
+    try:
+        if not os.path.isfile(os.path.join(build_dir, "build.ninja")):
+            subprocess.run([
+                cmake, "-G", "Ninja", "-S", ROOT, "-B", build_dir,
+                "-DCMAKE_BUILD_TYPE=Release",
+                f"-DCMAKE_TOOLCHAIN_FILE={toolchain}",
+                "-DLIBRW_PLATFORM=GAMECUBE",
+                "-DDKP_OGC_PLATFORM_LIBRARY=libogc2",
+                "-DREVC_THEORA_ROOT=" + os.path.join(ROOT, "vendor", "portlibs",
+                                                     "ppc"),
+            ], check=True, env=env)
+        subprocess.run([ninja, "-C", build_dir], check=True, env=env)
+    finally:
+        if patched:
+            gx_restore()
     dol = os.path.join(build_dir, "src", "reVC.dol")
     print(f"\n  {target}: {dol}")
 
@@ -278,6 +389,11 @@ def main():
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--keep-sfx-raw", action="store_true",
                 help="keep the unpacked sample bank for an SD-only build")
+    parser.add_argument("--video", choices=("composite", "progressive"),
+                default="composite", help="GameCube video mode (cube only): "
+                                           "composite = 480i (DOL-101); "
+                                           "progressive = 480p (GCHD). "
+                                           "Baked into librw at build time.")
     args = parser.parse_args()
     if args.self_test:
         assert callable(build) and callable(setup) and ROOT
@@ -293,7 +409,8 @@ def main():
     cmake = find_tool("cmake", dkp)
     ninja = find_tool("ninja", dkp)
     for target in ("cube", "wii") if args.target == "all" else (args.target,):
-        build(target, dkp, cmake, ninja)
+        video = args.video if target == "cube" else None
+        build(target, dkp, cmake, ninja, video)
 
 
 if __name__ == "__main__":
