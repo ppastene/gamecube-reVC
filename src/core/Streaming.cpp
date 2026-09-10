@@ -873,6 +873,35 @@ StreamedSize(int32 streamId)
 	return CStreaming::ms_aInfoForModel[streamId].GetCdSize() *
 	    CDSTREAM_SECTOR_SIZE;
 }
+
+// A dictionary that fails to load once keeps failing: each failure here is
+// RemoveModel + ReRequestModel below, so one unallocatable tiled texture
+// becomes an endless retry that drains the heap while streaming never
+// advances — exactly the "requests it again" trap the librw native reader
+// warns about (gxraster.cpp, readNativeTexture). Bound it: after three
+// consecutive failures of the same TXD slot, give up on it for this request.
+// The cost is a missing-texture world (silhouettes), never a freeze.
+static bool
+OgcTxdGiveUp(int32 slot)
+{
+	static int32 gTxdFailSlot[6];
+	static uint32 gTxdFailCount[6];
+	static int32 gTxdFailIdx;
+	for(int32 i = 0; i < 6; i++){
+		if(gTxdFailSlot[i] == slot){
+			if(++gTxdFailCount[i] > 3){
+				gTxdFailSlot[i] = 0;
+				gTxdFailCount[i] = 0;
+				return true;
+			}
+			return false;
+		}
+	}
+	gTxdFailSlot[gTxdFailIdx] = slot;
+	gTxdFailCount[gTxdFailIdx] = 1;
+	gTxdFailIdx = (gTxdFailIdx + 1) % 6;
+	return false;
+}
 #else
 #define StreamedSize(id) (CStreaming::ms_aInfoForModel[id].GetCdSize() * CDSTREAM_SECTOR_SIZE)
 #endif
@@ -984,6 +1013,17 @@ CStreaming::ConvertBufferToObject(int8 *buf, int32 streamId)
 
 		if(!success){
 			debug("Failed to load %s.txd\n", CTxdStore::GetTxdName(streamId - STREAM_OFFSET_TXD));
+#ifdef GTA_OGC
+			if(OgcTxdGiveUp(streamId - STREAM_OFFSET_TXD)){
+				char line[96];
+				snprintf(line, sizeof(line),
+				    "TXDRETRY giveup txd=%d", streamId - STREAM_OFFSET_TXD);
+				BootLog(line);
+				RemoveModel(streamId);
+				RwStreamClose(stream, &mem);
+				return false;
+			}
+#endif
 			RemoveModel(streamId);
 			ReRequestModel(streamId);
 			RwStreamClose(stream, &mem);

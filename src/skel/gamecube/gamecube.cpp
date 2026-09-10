@@ -1429,6 +1429,7 @@ main(int, char *[])
 		case GS_INIT_PLAYING_GAME:
 			printf("GS_INIT_PLAYING_GAME\n");
 			InitialiseGame();
+			BootLog("init ok");
 			FrontEndMenuManager.m_bGameNotLoaded = false;
 			gGameState = GS_PLAYING_GAME;
 			BootLog("entering game loop");
