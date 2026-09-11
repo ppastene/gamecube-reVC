@@ -222,6 +222,11 @@ And then copy to /usr/local/bin/encoder_example
 sudo cp /tmp/revc-encoder /usr/local/bin/encoder_example
 ```
 
+## Logging
+
+The game will generate .log files during execution. In case of a more in-depth logging
+create an ```autolog.txt``` in the same place as the reVC.dol.
+
 ## Running
 
 ### Dolphin
