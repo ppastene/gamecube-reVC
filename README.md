@@ -277,6 +277,7 @@ Real-hardware disc boot is not functional yet — see [Status](#status).
   RenderWare format in `tools/gamecube/assets/`, licence file included.
 - [Xiph.Org](https://xiph.org/) — ogg, opus, opusfile, Tremor and theora.
 - [devkitPro](https://devkitpro.org/) — devkitPPC, libogc and AESND.
+- [Extrems](https://www.extremscorner.org/) - libogc2
 
 ## License
 
