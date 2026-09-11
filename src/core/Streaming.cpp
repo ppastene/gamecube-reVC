@@ -224,6 +224,24 @@ CStreaming::Init2(void)
 		ms_pExtraObjectsDir = nil;
 		return false;
 	}
+#ifdef GTA_OGC
+	// The buffer sized itself to the largest FILE in the directory — on this
+	// image a single multi-MB allocation that left the ~16.5MB arena so full
+	// the init loading screen could not fit a 512x512 tiled texture (measured
+	// at that failure: res=16451K, free=221K, maxblk=64K). The streamer asks
+	// for individual model files, well under a channel, so this is overkill.
+	// Cap to 4MB total (2MB per channel); two-pass large-file loading covers
+	// the rest. Smaller transfers cost DVD seeks; a real console accepts that
+	// rather than a heap that cannot run its own loading screen.
+	if(ms_streamingBufferSize > 2048)
+		ms_streamingBufferSize = 2048;
+	{
+		char line[64];
+		snprintf(line, sizeof(line), "stream buffer %dK",
+		    ms_streamingBufferSize * CDSTREAM_SECTOR_SIZE / 1024);
+		BootLog(line);
+	}
+#endif
 	size_t roundedStreamingBufferSize = (size_t)ms_streamingBufferSize;
 	if(roundedStreamingBufferSize & 1)
 		roundedStreamingBufferSize++;

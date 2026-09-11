@@ -726,7 +726,7 @@ ResetLoadingScreenBar()
 // Whether boot breadcrumbs are painted on the TV as well as sent to the Gecko
 // and the SD. Off by default: on screen it is a full-page wall of text over
 // the loading screen. Toggled by holding L + A for three seconds.
-bool gShowBootConsole = false;
+bool gShowBootConsole = true;
 
 // Whether the periodic diagnostics are written to the SD.
 //
@@ -740,6 +740,11 @@ bool gShowBootConsole = false;
 //
 // Off by default. Gecko carries the same lines and is a separate transport.
 bool gLogToSd = false;
+// Boot-phase heartbeat for the freeze watchdog. BootLog writes this on every
+// breadcrumb; gamecube.cpp's watchdog reads it to report a GS_INIT_* phase
+// that went silent, since those run a whole load inside one loop iteration
+// and the frame counter cannot watchdog them.
+volatile unsigned gBootLogLastMs;
 // Effect-pass vitals for the P profile line; MBlur counts into these.
 uint32 gFxQueued, gFxDrawn;
 // Lost with an uncommitted revert; zero until its increment site returns.
@@ -755,6 +760,23 @@ unsigned gxWorstFrameUs, gxWorstSnap;
 void
 BootLog(const char *msg)
 {
+	gBootLogLastMs = (unsigned)(ticks_to_millisecs(gettime()));
+	// dvd:/autolog.txt arms the SD logs. The same probe lives inside Idle(),
+	// but Idle only runs once the game loop is up — every breadcrumb this
+	// boot wrote would already be gone. Probe here, on the first call, so
+	// the very first phase (GS_INIT_ONCE splash) lands on the card.
+	{
+		static int8 autoLogEarly = -1;
+		if(autoLogEarly < 0){
+			DVD_FS_GUARD;
+			FILE *al = fopen("dvd:/autolog.txt", "r");
+			autoLogEarly = al != nil;
+			if(al)
+				fclose(al);
+			if(autoLogEarly)
+				gLogToSd = true;
+		}
+	}
 	// The printf goes to the libogc console, which paints white-on-black text
 	// straight over the loading screen — and it is redundant, because the same
 	// line already goes to the Gecko and to the SD. Off unless asked for.
@@ -765,7 +787,19 @@ BootLog(const char *msg)
 	DVD_FS_GUARD;
 	FILE *progress = gLogToSd ? fopen("dvd:/boot_progress.log", "a") : nil;
 	if(progress){
+#ifdef GTA_OGC
+		// Label every boot-phase breadcrumb with the heap resident/free at
+		// that instant (mallinfo uordblks/fordblks). The console has no
+		// Gecko in this deck and the phases were previously opaque; one
+		// change here annotates every BootLog line at once.
+		struct mallinfo gmi = mallinfo();
+		size_t gres = (size_t)gmi.arena > (size_t)gmi.fordblks ?
+		    (size_t)gmi.arena - (size_t)gmi.fordblks : 0;
+		fprintf(progress, "%s [mem %uK free %uK]\n", msg,
+		    (unsigned)(gres>>10), (unsigned)(gmi.fordblks>>10));
+#else
 		fprintf(progress, "%s\n", msg);
+#endif
 		fclose(progress);
 	}
 }

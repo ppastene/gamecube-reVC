@@ -1,6 +1,7 @@
 #include "common.h"
 #include <ctype.h>
 #include <new>
+#include <malloc.h>
 #include "main.h"
 
 #include "General.h"
@@ -28,6 +29,7 @@
 #include "FileLoader.h"
 #include "MemoryHeap.h"
 #include "Streaming.h"
+#include "Pools.h"
 #include "ColStore.h"
 #include "Occlusion.h"
 
@@ -1571,12 +1573,35 @@ CFileLoader::LoadScene(const char *filename)
 	section = NONE;
 	pathIndex = -1;
 	debug("Creating objects from %s...\n", filename);
+#ifdef GTA_OGC
+	// Per-entry breadcrumb. The boot-phase watchdog reads the BootLog stream
+	// as a heartbeat (see main.cpp/gamecube.cpp), and the "Loading X.IPL"
+	// line that led here is written before this file even opens — so a stall
+	// inside LoadScene would otherwise be indistinguishable from a stall
+	// opening the next file. Counting parsed lines names the entry, and a
+	// stopped counter at "scene 1" means the read itself wedged. filename
+	// points into the shared ms_line buffer (LoadLevel passes line+4), so its
+	// content is clobbered by the first LoadLine below; snapshot it now.
+	char base[128];
+	strncpy(base, filename, sizeof(base) - 1);
+	base[sizeof(base) - 1] = '\0';
+	unsigned long sceneLines = 0;
+#endif
 
 	fd = CFileMgr::OpenFile(filename, "rb");
 	assert(fd > 0);
 	for(line = CFileLoader::LoadLine(fd); line; line = CFileLoader::LoadLine(fd)){
 		if(*line == '\0' || *line == '#')
 			continue;
+#ifdef GTA_OGC
+		++sceneLines;
+		{
+			char sbuf[160];
+			snprintf(sbuf, sizeof(sbuf), "scene %s %lu",
+			    base, sceneLines);
+			BootLog(sbuf);
+		}
+#endif
 
 		if(section == NONE){
 			if(isLine4(line, 'i','n','s','t')) section = INST;
@@ -1585,6 +1610,17 @@ CFileLoader::LoadScene(const char *filename)
 			else if(isLine4(line, 'p','i','c','k')) section = PICK;
 			else if(isLine4(line, 'p','a','t','h')) section = PATH;
 			else if(isLine4(line, 'o','c','c','l')) section = OCCL;
+#ifdef GTA_OGC
+			if(section != NONE){
+				static const char *secName[] = {
+					"?", "inst", "zone", "cull", "occl", "pick", "path"
+				};
+				char sbuf[160];
+				snprintf(sbuf, sizeof(sbuf), "sec %s %s",
+				    base, secName[section]);
+				BootLog(sbuf);
+			}
+#endif
 		}else if(isLine3(line, 'e','n','d')){
 			section = NONE;
 		}else switch(section){
@@ -1658,6 +1694,14 @@ CFileLoader::LoadObjectInstance(const char *line)
 		return;
 	assert(mi->IsSimple());
 
+#ifdef GTA_OGC
+	{
+		char sbuf[160];
+		snprintf(sbuf, sizeof(sbuf), "inst %d %s", id, name);
+		BootLog(sbuf);
+	}
+#endif
+
 	if(!CStreaming::IsObjectInCdImage(id))
 		debug("Not in cdimage %s\n", mi->GetModelName());
 
@@ -1685,6 +1729,19 @@ CFileLoader::LoadObjectInstance(const char *line)
 		if(mi->GetLargestLodDistance() < 2.0f)
 			entity->bIsVisible = false;
 		CWorld::Add(entity);
+
+#ifdef GTA_OGC
+		// Log building pool usage every 100 buildings to track pool exhaustion
+		static int buildingCount = 0;
+		if(++buildingCount % 100 == 0){
+			char sbuf[128];
+			snprintf(sbuf, sizeof(sbuf), "buildings %d/%d free %dK",
+			    CPools::GetBuildingPool()->GetNoOfUsedSpaces(),
+			    CPools::GetBuildingPool()->GetSize(),
+			    mallinfo().fordblks >> 10);
+			BootLog(sbuf);
+		}
+#endif
 
 		CColModel *col = entity->GetColModel();
 		if(col->numSpheres || col->numBoxes || col->numTriangles){

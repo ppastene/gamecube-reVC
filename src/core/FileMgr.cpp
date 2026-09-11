@@ -3,6 +3,9 @@
 #ifdef _WIN32
 #include <direct.h>
 #endif
+#ifdef GTA_OGC
+#include <ogc/timesupp.h>
+#endif
 #include "common.h"
 #include "crossplatform.h"
 
@@ -199,6 +202,19 @@ myfgets(char *buf, int len, int fd)
 	int c;
 	char *p;
 
+#ifdef GTA_OGC
+	// Text loaders (IPL/IDE/ZON/dat) read byte-by-byte, and each fgetc that
+	// refills the newlib buffer goes through the devoptab into libfat. Every
+	// other card access takes the FS guard, so an unguarded read loop here
+	// races the audio and streaming threads inside libfat. One guard for the
+	// whole line keeps it one transaction; the mutex is recursive, so a
+	// caller already holding it is safe too.
+	DVD_FS_GUARD;
+	
+	// Timeout detection: if a single line read takes >5 seconds, the SD is
+	// wedged. Park the system with a diagnostic message.
+	unsigned startTime = (unsigned)(ticks_to_millisecs(gettime()));
+#endif
 	p = buf;
 	len--;	// NUL byte
 	while(len--){
@@ -211,6 +227,17 @@ myfgets(char *buf, int len, int fd)
 		*p++ = c;
 		if(c == '\n')
 			break;
+#ifdef GTA_OGC
+		// Check timeout after each character to catch stalls inside the loop
+		unsigned elapsed = (unsigned)(ticks_to_millisecs(gettime())) - startTime;
+		if(elapsed > 5000){
+			extern void gcFatalPark(const char *kind, const char *msg);
+			char msg[128];
+			snprintf(msg, sizeof(msg), "myfgets timeout %ums fd=%d",
+			    elapsed, fd);
+			gcFatalPark("FILEREAD", msg);
+		}
+#endif
 	}
 	*p = '\0';
 	return buf;

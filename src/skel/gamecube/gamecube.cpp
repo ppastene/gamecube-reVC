@@ -36,6 +36,9 @@ namespace rw { namespace gx { int8_t gxReadEfbPref(void); } }
 #include <iso9660.h>
 extern "C" bool ISO9660_MountDbg(const char *name, const DISC_INTERFACE *disc_interface);
 #include <fat.h>
+#ifdef REVC_LIBOGC2
+#include <dvm.h>
+#endif
 #ifdef HW_RVL
 #include <sdcard/wiisd_io.h>
 #include <ogc/usbstorage.h>
@@ -212,6 +215,7 @@ watchdogMain(void*)
 	uint32 last = 0;
 	int stuck = 0;
 	bool reported = false;
+	bool bootStuckReported = false;
 	while(!watchdogStop){
 		usleep(1000*1000);
 		if(gFrameTick != last){
@@ -219,6 +223,42 @@ watchdogMain(void*)
 			stuck = 0;
 			reported = false;
 			continue;
+		}
+		// Boot-time stall. GS_INIT_ONCE and GS_INIT_PLAYING_GAME each run a
+		// whole load inside a single loop iteration, so their frame counter
+		// freezes on every load and the tick logic above cannot watchdog
+		// them. BootLog is their heartbeat instead — every phase writes a
+		// breadcrumb before it starts. A boot phase with no new breadcrumb
+		// for 30s (matches the stream-read timeout; breadcrumbs land every
+		// ~1-2s while parsing) is a real stall. What
+		// writes this report tells its flavour: fs idle → CPU-only loop, and
+		// boothang.log lands; fs wedged → the I/O itself is the thing that
+		// stalled, and boothang.log staying empty is that answer. Re-reported
+		// every eight seconds it stays silent, like the frame hang below.
+		if(gGameState == GS_INIT_ONCE || gGameState == GS_INIT_PLAYING_GAME){
+			extern volatile unsigned gBootLogLastMs;
+			unsigned now = (unsigned)(ticks_to_millisecs(gettime()));
+			if(now - gBootLogLastMs > 30000)
+				bootStuckReported = ++stuck >= 8;
+			else
+				stuck = 0;
+			if(bootStuckReported){
+				char line[160];
+				snprintf(line, sizeof(line),
+				    "BOOTHANG state=%u silent=%ums lastBootlog=%ums",
+				    (unsigned)gGameState, now - gBootLogLastMs,
+				    gBootLogLastMs);
+				bootStuckReported = false;
+				stuck = 0;
+				if(CdStreamFsTryLock()){
+					FILE *hf = fopen("dvd:/boothang.log", "a");
+					if(hf){
+						fprintf(hf, "%s\n", line);
+						fclose(hf);
+					}
+					CdStreamFsUnlock();
+				}
+			}
 		}
 		// Only the states whose loop iteration IS a frame. GS_INIT_ONCE and
 		// GS_INIT_PLAYING_GAME each do a whole game load inside a single
@@ -803,6 +843,13 @@ psInstallFileSystem(void)
 		static const DISC_INTERFACE *const sdSlots[] = { &__io_gcsda, &__io_gcsdb };
 #endif
 		static const char *const sdNames[] = { "SD Gecko slot A", "SD Gecko slot B" };
+#endif
+#ifdef REVC_LIBOGC2
+		// libogc2's DVM layer needs the filesystem drivers registered explicitly
+		// for exFAT support; without it, only FAT32 is recognized and larger cards
+		// may wedge on read/write operations.
+		dvmRegisterFsDriver(&g_vfatFsDriver);
+		dvmRegisterFsDriver(&g_exfatFsDriver);
 #endif
 		for(size_t i = 0; i < sizeof(sdSlots)/sizeof(sdSlots[0]); i++){
 			printf("mount: probing %s...\n", sdNames[i]);
