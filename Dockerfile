@@ -43,6 +43,25 @@ ENV DEVKITPRO=/opt/devkitpro \
     DEVKITPPC=/opt/devkitpro/devkitPPC \
     THEORA_ENCODER_EXAMPLE=/usr/local/bin/encoder_example
 
+# libogc2 (fincs') is not in devkitPro's dkp-libs: the libfat there is
+# libfat-ogc 2.1.0, which has no exFAT driver at all, and the rest of its API
+# differs (no AESND_SetVoiceUserData, CARD_WORKAREA, DISC_INTERFACE* startup).
+# The toolchain for GameCube comes from extremscorner's pacman repo instead.
+# Recipe from libogc2's own Dockerfile; it replaces dkp-libs because that repo
+# ships newer builds of the same packages and mixing them breaks the toolchain.
+RUN rm /etc/apt/sources.list.d/devkitpro.list \
+    && curl -fsSL https://packages.libogc2.org/devkitpro.gpg | dkp-pacman-key --add - \
+    && dkp-pacman-key --lsign-key C8A2759C315CFBC3429CC2E422B803BA8AA3D7CE \
+    && sed -i '/^\[dkp-libs\]$/,$d' /opt/devkitpro/pacman/etc/pacman.conf \
+    && printf '\n[libogc2-devkitpro]\nServer = https://packages.libogc2.org/devkitpro/linux/$arch\n' >> /opt/devkitpro/pacman/etc/pacman.conf \
+    && dkp-pacman -Syy && \
+    dkp-pacman -S --ask 5 --ignore *-docs*,*-examples* gamecube-dev gamecube-portlibs \
+        ppc-portlibs libogc2-dkp-toolchain-vars libogc2-libdvm \
+    && yes | dkp-pacman -Scc \
+    && "$DEVKITPPC/bin/powerpc-eabi-nm" "$DEVKITPRO/libogc2/gamecube/lib/libfat.a" | grep -q g_exfatFsDriver
+
+ENV DKP_OGC_PLATFORM_LIBRARY=libogc2
+
 COPY . /src
 WORKDIR /src
 ENTRYPOINT ["python3", "build.py", "--game", "/assets/GTAVC", "--gamefiles", "/assets/gamefiles", \

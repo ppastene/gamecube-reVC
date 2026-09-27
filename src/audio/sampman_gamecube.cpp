@@ -124,12 +124,13 @@ enum { GC_GENERIC_VOICES = GC_CHANNEL_VOICES - 1 };
 struct GcVoiceStream;
 static void gcVoiceStreamCallback(AESNDPB *pb, GcChannel *c);
 static void
-gcVoiceCallback(AESNDPB *pb, u32 state, void *arg)
+gcVoiceCallback(AESNDPB *pb, u32 state)
 {
+	GcChannel *c = (GcChannel*)AESND_GetVoiceUserData(pb);
 	if(state == VOICE_STATE_STOPPED)
-		((GcChannel*)arg)->playing = FALSE;
+		c->playing = FALSE;
 	else if(state == VOICE_STATE_STREAM)
-		gcVoiceStreamCallback(pb, (GcChannel*)arg);
+		gcVoiceStreamCallback(pb, c);
 }
 
 static void
@@ -541,23 +542,38 @@ static void gcVoiceSlotsInit(void);    // defined with the ARAM voice machinery
 static void gcLoadTrackLengths(void);  // same
 
 
+// ARAM has a single owner and both consumers route through it. AR_Alloc
+// records each block length via *__ARBlockLen++ with no null or bounds check,
+// so a nil table means the first allocation writes through address zero.
+// 512 entries: the CdStream cache takes up to 256 slots, the sample banks 44,
+// and the GX texel store reserves the rest, so the old 300 was exactly full and
+// one more block would have written past the table. Bookkeeping only — AR_Init
+// does not reserve the ARAM itself, its size is the hardware's.
+#define ARAM_BLOCKS 512
+static u32 aramBlocks[ARAM_BLOCKS];
+
+// The AR_Init here is deliberately unconditional and must stay that way:
+// libogc2's __io_aram.startup() runs AR_Init(NULL, 0) from dvmInit(), and
+// that sets the AR initialised flag with a nil table, so a guard on
+// AR_CheckInit() locks the nil table in instead of repairing it. ARQ_Init
+// makes __io_aram.startup() return early and skip its nil AR_Init, so this
+// has to run before dvmInit() — i.e. from psInstallFileSystem(), not only
+// from the audio init, which happens after the first texture is already read.
+// Without it the GX texel store's AR_Alloc stores through address zero.
+extern "C" void
+gcAramInit(void)
+{
+	AR_Init(aramBlocks, ARAM_BLOCKS);
+	ARQ_Init();
+}
+
 bool8
 cSampleManager::Initialise(void)
 {
 	if(_bSampmanInitialised)
 		return TRUE;
 
-	if(!AR_CheckInit()){
-		// AR_Alloc records each block length via *__ARBlockLen++ with no
-		// null or bounds check — AR_Init(nil, 0) hands it a null pointer and
-		// the first allocation writes through address zero (measured: boot
-		// died on an unknown instruction with the exception vectors gone).
-		// 300, not 16: the CdStream ARAM cache allocs up to 256 slots through
-		// the SAME array when this init wins the race (both sides guard with
-		// AR_CheckInit, so whoever runs first sizes for both).
-		static u32 aramBlocks[300];
-		AR_Init(aramBlocks, 300);
-	}
+	gcAramInit();
 	// B115 (user): dvd:/noaudio.txt = no audio at all — the PC "no device"
 	// path (cAudioManager stays uninitialised, every DMAudio call is a no-op).
 	// ARAM is initialised above regardless, the texel store needs it.
@@ -575,9 +591,9 @@ cSampleManager::Initialise(void)
 	// Vorbis radio streams, no per-channel PCM staging. Returning FALSE is the
 	// PC "no audio device" path: cAudioManager stays uninitialised, so
 	// MusicManager never starts and every DMAudio call is a no-op. ARAM is
-	// still initialised above with a real block table — the CdStream cache
-	// would otherwise AR_Init(nil, 0) and the first AR_Alloc writes through
-	// address zero. FMV audio (gcmovie's own AESND lifetime) is separate.
+	// still initialised above through gcAramInit with a real block table, so
+	// the CdStream cache cannot leave ARAM unusable whichever of the two gets
+	// there first. FMV audio (gcmovie's own AESND lifetime) is separate.
 	//
 	// Audio is back (user, 09-01 evening): the resident bank rides ARAM as
 	// IMA ADPCM (3.8MB in the 4MB the texel tier leaves), decoded on prepare;
@@ -592,16 +608,20 @@ cSampleManager::Initialise(void)
 	// held-back voice goes to the police radio's fixed slot (see
 	// GC_GENERIC_VOICES above).
 	for(int32 i = 0; i < GC_GENERIC_VOICES; i++){
-		gChannels[i].voice = AESND_AllocateVoiceWithArg(gcVoiceCallback, &gChannels[i]);
-		if(gChannels[i].voice)
+		gChannels[i].voice = AESND_AllocateVoice(gcVoiceCallback);
+		if(gChannels[i].voice){
+			AESND_SetVoiceUserData(gChannels[i].voice, &gChannels[i]);
 			AESND_SetVoiceStop(gChannels[i].voice, true);
+		}
 	}
 	{
 		GcChannel *pc = &gChannels[CHANNEL_POLICE_RADIO];
 		if(pc->voice == nil)
-			pc->voice = AESND_AllocateVoiceWithArg(gcVoiceCallback, pc);
-		if(pc->voice)
+			pc->voice = AESND_AllocateVoice(gcVoiceCallback);
+		if(pc->voice){
+			AESND_SetVoiceUserData(pc->voice, pc);
 			AESND_SetVoiceStop(pc->voice, true);
+		}
 	}
 	gcVoiceSlotsInit();
 
@@ -2106,7 +2126,7 @@ gcVoiceDecMain(void *)
 // a voice stopped between streams, a voice armed before its first chunk.
 static uint8 gStreamSilence[STREAM_CHUNK_BYTES] __attribute__((aligned(32)));
 static void
-gcStreamCallback(AESNDPB *pb, u32 state, void *arg)
+gcStreamCallback(AESNDPB *pb, u32 state)
 {
 	// The DSP finished its buffer and wants the next one NOW. Waiting for the
 	// next game frame to provide it stretches every chunk by half a frame —
@@ -2114,7 +2134,7 @@ gcStreamCallback(AESNDPB *pb, u32 state, void *arg)
 	// from a chunk the game thread decoded ahead of time. No file I/O on this
 	// thread; if the pump has not caught up, AESND replays the stale chunk
 	// and the counter says so.
-	GcStream *st = (GcStream*)arg;
+	GcStream *st = (GcStream*)AESND_GetVoiceUserData(pb);
 	if(state != VOICE_STATE_STREAM)
 		return;
 	st->cbCount++;
@@ -3205,8 +3225,9 @@ cSampleManager::StartStreamedFile(tTrack nFile, uint32 nPos, uint8 nStream)
 	}
 
 	if(st->voice == nil){
-		st->voice = AESND_AllocateVoiceWithArg(gcStreamCallback, st);
+		st->voice = AESND_AllocateVoice(gcStreamCallback);
 		if(st->voice == nil){ gcSringClose(st); return FALSE; }
+		AESND_SetVoiceUserData(st->voice, st);
 	}
 	for(int32 i = 0; i < 2; i++)
 		if(st->buf[i] == nil){

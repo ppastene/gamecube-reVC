@@ -22,6 +22,28 @@ EL_TORITO_BOOT_RECORD_SECTOR = 17
 EL_TORITO_CATALOG_POINTER = 71
 EL_TORITO_DEFAULT_ENTRY = 0x20
 EL_TORITO_SECTOR_COUNT = EL_TORITO_DEFAULT_ENTRY + 6
+EL_TORITO_LOAD_RBA = EL_TORITO_DEFAULT_ENTRY + 8
+EL_TORITO_BOOTABLE = 0x88
+SYSTEM_AREA_BYTES = 32768
+
+DOL_HEADER_BYTES = 0x100
+MEM1_BASE = 0x80000000
+DOL_LOADER_LIMIT = 0x81200000
+DOL_ALIGN = 32
+# The GBI apploader (cubeboot-tools ppc/apploader) reads struct dol_header: 7
+# text and 11 data file offsets, then the matching addresses and sizes, then
+# the bss address, the bss size and the entry point, all inside 0x100 bytes.
+# devkitPro's elf2dol writes exactly that for a single text and data section,
+# so the DOL needs no rewriting to become the El Torito boot image.
+DOL_LAYOUT_CLASSIC = {'text_off': 0x00, 'data_off': 0x1C, 'text_addr': 0x48,
+                      'data_addr': 0x64, 'text_size': 0x90, 'data_size': 0xAC,
+                      'bss_addr': 0xD8, 'bss_size': 0xDC, 'entry': 0xE0}
+DOL_SECTION_SLOTS = (('text', 7), ('data', 11))
+GBI_GAME_CODE = b'GBLP'
+GBI_GAME_CODE_OFFSET = 0x00
+GBI_MAGIC = 0xC2339F3D
+GBI_MAGIC_OFFSET = 0x1C
+GBI_SIMULATED_MEMORY_OFFSET = 0x444
 
 
 def iso_files(path):
@@ -72,6 +94,67 @@ def disc_order(path):
     if name in {'models/gta3.dir', 'models/gta3.img'}:
         return (5, name)
     return (1, name)
+
+
+def dol_word(dol, key, layout=None):
+    return struct.unpack_from('>I', dol, (layout or DOL_LAYOUT_CLASSIC)[key])[0]
+
+
+def dol_sections(dol, name=None):
+    """Yield the (offset, address, size) triples the GBI apploader loads."""
+    for group, slots in DOL_SECTION_SLOTS:
+        if name and group != name:
+            continue
+        for index in range(slots):
+            section = []
+            for key in ('off', 'addr', 'size'):
+                field = DOL_LAYOUT_CLASSIC[f'{group}_{key}'] + index*4
+                section.append(struct.unpack_from('>I', dol, field)[0])
+            if section[2]:
+                yield tuple(section)
+
+
+def verify_boot_dol(dol, memory_limit):
+    """Fail unless the GBI apploader would accept dol as its boot image.
+
+    These are the apploader's own al_check_dol rules plus the simulated memory
+    size the GBI declares, so a DOL that passes here is one it can load.
+    """
+    if len(dol) < DOL_HEADER_BYTES:
+        raise ValueError('boot DOL is shorter than its header')
+    if dol_word(dol, 'entry') & (DOL_ALIGN - 1):
+        raise ValueError('boot DOL entry point is not 32 byte aligned')
+    if not any(dol_word(dol, 'entry') in range(address, address+size)
+               for _, address, size in dol_sections(dol, 'text')):
+        raise ValueError('boot DOL entry point is outside the text sections')
+    for offset, address, size in dol_sections(dol):
+        if offset < DOL_HEADER_BYTES:
+            raise ValueError(f'boot DOL section at {offset:#x} sits inside the header')
+        if offset % DOL_ALIGN or address % DOL_ALIGN:
+            raise ValueError(f'boot DOL section at {offset:#x}/{address:#x} is '
+                             'not 32 byte aligned')
+        if offset + size > len(dol):
+            raise ValueError(f'boot DOL section at {offset:#x} runs past the '
+                             f'{len(dol)} byte file')
+        if not MEM1_BASE <= address <= DOL_LOADER_LIMIT:
+            raise ValueError(f'boot DOL address {address:#x} is outside the '
+                             f'{MEM1_BASE:#x}..{DOL_LOADER_LIMIT:#x} the apploader allows')
+    bss = dol_word(dol, 'bss_addr')
+    bss_size = dol_word(dol, 'bss_size')
+    if bss + bss_size > memory_limit:
+        raise ValueError(f'boot DOL needs {bss + bss_size:#x} of memory, the GBI '
+                         f'apploader only allows {memory_limit:#x}')
+    if bss and not MEM1_BASE <= bss < memory_limit:
+        raise ValueError(f'boot DOL bss address {bss:#x} is outside the '
+                         f'{memory_limit:#x} the GBI apploader allows')
+
+
+def gbi_memory_limit(gbi):
+    """Return the highest address the GBI apploader lets a boot DOL reach."""
+    simulated = struct.unpack_from('>I', gbi, GBI_SIMULATED_MEMORY_OFFSET)[0]
+    if not simulated:
+        raise ValueError('gbi.hdr does not declare a simulated memory size')
+    return MEM1_BASE + simulated
 
 
 def verify_files(image_path, work):
@@ -141,8 +224,14 @@ def main():
             sys.exit(f"{label} not found: {path}")
     if shutil.which("xorriso") is None:
         sys.exit("xorriso is required (brew install xorriso)")
-    if os.path.getsize(args.gbi) != 32768:
+    with open(args.gbi, "rb") as source:
+        gbi = source.read()
+    if len(gbi) != SYSTEM_AREA_BYTES:
         sys.exit("gbi.hdr must occupy the 16-sector ISO system area")
+    if gbi[GBI_GAME_CODE_OFFSET:GBI_GAME_CODE_OFFSET+4] != GBI_GAME_CODE or \
+            struct.unpack_from(">I", gbi, GBI_MAGIC_OFFSET)[0] != GBI_MAGIC:
+        sys.exit(f"{args.gbi} is not a cubeboot generic boot image")
+    memory_limit = gbi_memory_limit(gbi)
 
     output = os.path.abspath(args.out)
     if dolphin_uses_image(output):
@@ -165,6 +254,14 @@ def main():
         if os.path.exists(boot_dol):
             os.unlink(boot_dol)
         shutil.copy2(args.dol, boot_dol)
+        # revc.dol is both the El Torito boot image and the payload Swiss loads,
+        # so the GBI apploader and Swiss read the same bytes.
+        with open(args.dol, "rb") as source:
+            dol = source.read()
+        try:
+            verify_boot_dol(dol, memory_limit)
+        except ValueError as error:
+            sys.exit(f"boot image rejected: {error}")
         padding = Path(work)/'disc_pad.bin'
         if padding.exists():
             sys.exit('disc_pad.bin is reserved for the disc layout')
@@ -182,7 +279,7 @@ def main():
             ]
             subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
             payload_size = os.path.getsize(image_path)
-            spare = MINI_DVD_BYTES - 32768 - payload_size
+            spare = MINI_DVD_BYTES - SYSTEM_AREA_BYTES - payload_size
             if spare < 0:
                 sys.exit(f'ISO exceeds the mini-DVD data budget by {-spare} bytes')
             with padding.open('r+b') as pad:
@@ -190,11 +287,13 @@ def main():
             os.unlink(image_path)
             subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
 
-        # Cubeboot reads the complete DOL length from the El Torito entry.
-        dol_sectors = (os.path.getsize(args.dol) + 511) // 512
+        # Cubeboot reads the complete DOL length from the El Torito entry, whose
+        # sector count is in 512 byte units while the load RBA is a 2048 byte
+        # media sector (apploader: load_rba * DI_SECTOR_SIZE).
+        dol_sectors = (len(dol) + 511) // 512
         if dol_sectors > 0xFFFF:
             sys.exit("DOL is too large for the El Torito sector-count field")
-        with open(args.gbi, "rb") as source, open(image_path, "r+b") as image:
+        with open(image_path, "r+b") as image:
             image.seek(EL_TORITO_BOOT_RECORD_SECTOR * ISO_SECTOR_BYTES +
                        EL_TORITO_CATALOG_POINTER)
             catalog_sector_data = image.read(4)
@@ -204,7 +303,7 @@ def main():
             image.seek(catalog_sector * ISO_SECTOR_BYTES + EL_TORITO_SECTOR_COUNT)
             image.write(struct.pack("<H", dol_sectors))
             image.seek(0)
-            image.write(source.read())
+            image.write(gbi)
         payload_size = os.path.getsize(image_path)
         if payload_size > MINI_DVD_BYTES:
             sys.exit(f"ISO is {payload_size - MINI_DVD_BYTES} bytes over mini-DVD capacity")
@@ -217,12 +316,25 @@ def main():
             image.truncate(MINI_DVD_BYTES)
         size = os.path.getsize(image_path)
         with open(image_path, "rb") as image:
+            image.seek(GBI_MAGIC_OFFSET)
+            if image.read(4) != struct.pack(">I", GBI_MAGIC):
+                sys.exit("ISO validation failed: generic boot image magic is missing")
+            image.seek(GBI_GAME_CODE_OFFSET)
+            if image.read(4) != GBI_GAME_CODE:
+                sys.exit("ISO validation failed: generic boot image game code is missing")
             image.seek(0x8001)
             if image.read(5) != b"CD001":
                 sys.exit("ISO validation failed: primary volume descriptor missing")
             image.seek(catalog_sector * ISO_SECTOR_BYTES + EL_TORITO_SECTOR_COUNT)
             if struct.unpack("<H", image.read(2))[0] != dol_sectors:
                 sys.exit("ISO validation failed: boot DOL length is wrong")
+            image.seek(catalog_sector * ISO_SECTOR_BYTES + EL_TORITO_LOAD_RBA)
+            boot_sector = struct.unpack("<I", image.read(4))[0]
+            if boot_sector != layout['/revc.dol']['sector']:
+                sys.exit("ISO validation failed: El Torito does not load the boot image")
+            image.seek(catalog_sector * ISO_SECTOR_BYTES + EL_TORITO_DEFAULT_ENTRY)
+            if image.read(1)[0] != EL_TORITO_BOOTABLE:
+                sys.exit("ISO validation failed: El Torito entry is not marked bootable")
             image.seek(MINI_DVD_BYTES - 1)
             if image.read(1) != b"\0":
                 sys.exit("ISO validation failed: final disc byte is not readable padding")

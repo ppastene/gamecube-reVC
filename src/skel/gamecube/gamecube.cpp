@@ -42,7 +42,6 @@ extern "C" void ISO9660_UnmountDbg(const char *name);
 #include <sdcard/gcsd.h>
 #include <ogc/lwp_watchdog.h>
 #include <ogc/color.h>
-#include <tuxedo/ppc/exception.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <stdarg.h>
@@ -884,86 +883,10 @@ panicPrintf(const char *fmt, ...)
 	fputs(line, stdout);
 }
 
-// Crash record for Dolphin's MemoryWatcher: the console below is invisible
-// under Dolphin's XFB emulation and eats stdout, so a crash looked like a freeze.
-extern "C" { volatile unsigned gCrashId, gCrashPc, gCrashLr, gCrashSp, gCrashStack[8]; }
-extern "C" { extern volatile const char *gMainWhere; }
-static void
-gcPanic(unsigned exid, PPCContext *ctx)
-{
-	static volatile bool inPanic;
-	if(inPanic)
-		for(;;)
-			;
-	inPanic = true;
-	gCrashId = exid; gCrashPc = ctx->pc; gCrashLr = ctx->lr; gCrashSp = ctx->gpr[1];
-	{
-		u32 sp = ctx->gpr[1];
-		for(int i = 0; i < 8 && sp && sp != 0xFFFFFFFF && (sp & 3) == 0 && sp >= 0x80000000u && sp < 0x81800000u; i++){
-			u32 *frame = (u32*)sp;
-			gCrashStack[i] = frame[1];
-			sp = frame[0];
-		}
-	}
-	fprintf(stderr, "CRASH exid %u pc %08X lr %08X sp %08X where %s stack %08X %08X %08X %08X %08X %08X\n",
-	    exid, ctx->pc, ctx->lr, ctx->gpr[1], (const char*)gMainWhere,
-	    gCrashStack[0], gCrashStack[1], gCrashStack[2], gCrashStack[3], gCrashStack[4], gCrashStack[5]);
-
-	// Stop the world FIRST. With interrupts live the decrementer keeps
-	// scheduling other threads, and the next game frame flips the
-	// framebuffer back — the red screen becomes a one-frame flash.
-	u32 level;
-	_CPU_ISR_Disable(level);
-	(void)level;
-
-	// Tuxedo exception IDs are sparse and start at one. Keeping this table
-	// indexed by the raw ID matters: the old compact table reported ISI (4)
-	// as "Interrupt", sending diagnosis toward the wrong hardware subsystem.
-	static const char *const names[] = {
-		"Unknown", "Reset", "MachineCheck", "DSI", "ISI", "Interrupt",
-		"Alignment", "Program", "FPU", "Decrementer", "Unknown", "Unknown",
-		"Syscall", "Trace", "Unknown", "Performance", "Unknown", "Unknown",
-		"Unknown", "IABR"
-	};
-
-	GX_AbortFrame();
-	void *xfb = (void*)0xC1700000;
-	VIDEO_SetFramebuffer(xfb);
-	__VIClearFramebuffer(xfb, 640*480*VI_DISPLAY_PIX_SZ, COLOR_MAROON);
-	__console_init(xfb, 48, 48, 640-96, 480-96, 2*640);
-
-	panicPrintf("reVC crash: %s exception\n",
-	    exid < sizeof(names)/sizeof(names[0]) ? names[exid] : "?");
-	for(unsigned i = 0; i < 8; i++)
-		panicPrintf("GPR%02u %08X GPR%02u %08X GPR%02u %08X GPR%02u %08X\n",
-		    i, ctx->gpr[i], i+8, ctx->gpr[i+8],
-		    i+16, ctx->gpr[i+16], i+24, ctx->gpr[i+24]);
-	panicPrintf("PC %08X LR %08X CTR %08X CR %08X\n",
-	    ctx->pc, ctx->lr, ctx->ctr, ctx->cr);
-
-	panicPrintf("STACK:");
-	u32 sp = ctx->gpr[1];
-	for(int i = 0; i < 12 && sp && sp != 0xFFFFFFFF && (sp & 3) == 0 &&
-	    sp >= 0x80000000u && sp < 0x81800000u; i++){
-		u32 *frame = (u32*)sp;
-		panicPrintf(" %08X", frame[1]);
-		sp = frame[0];
-	}
-
-	for(;;)
-		;
-}
-
-static void
-gcInstallPanicHandler(void)
-{
-	PPCExcptCurPanicFn = gcPanic;
-}
-
 // Fatal-but-not-exception ends (assert, abort, exit) return to the loader,
 // which in Dolphin batch mode just quits the emulator and the message is
 // never seen. Park on a readable screen instead. These run in normal thread
-// context, so unlike gcPanic they can write crash.log before stopping the
+// context, so they can write crash.log before stopping the
 // world. The stack walk names the caller (symbolize with addr2line).
 // Non-static: sampman's fail-loud audio path parks through here too.
 
@@ -1303,9 +1226,55 @@ psGetMemoryFunctions(void)
 	return &memFuncs;   // B80: nil left librw on plain malloc; the B79 big-block routing lives in MemoryMgr
 }
 
+static const char *
+mountCard(const char *name, const DISC_INTERFACE *iface)
+{
+	static bool dvmUp = false;
+	// libogc2's fatMount() registers only the vfat driver, so an exFAT card
+	// never mounts even though both drivers ship in the same library.
+	if(!dvmUp){
+		if(!dvmInit(FALSE, 64, 32))
+			return nil;
+		dvmRegisterFsDriver(&g_vfatFsDriver);
+		dvmRegisterFsDriver(&g_exfatFsDriver);
+		dvmUp = true;
+	}
+	DvmDisc *disc = dvmDiscCreate(const_cast<DISC_INTERFACE *>(iface));
+	if(disc == nil)
+		return nil;
+	DvmDisc *cached = dvmDiscCacheCreate(disc, 64, 32);
+	if(cached == nil){
+		disc->vt->destroy(disc);
+		return nil;
+	}
+	disc = cached;
+	dvmDiscAddUser(disc);
+	static const char *const fsTypes[] = { "vfat", "exfat" };
+	for(size_t i = 0; i < sizeof(fsTypes)/sizeof(fsTypes[0]); i++){
+		if(dvmMountVolume(name, disc, 0, fsTypes[i])){
+			printf("mount: %s mounted as %s\n", name, fsTypes[i]);
+			return fsTypes[i];
+		}
+	}
+	dvmDiscRemoveUser(disc);
+	disc->vt->destroy(disc);
+	return nil;
+}
+
+extern "C" void gcAramInit(void);   // sampman_gamecube.cpp: owns the ARAM block table
+
 RwBool
 psInstallFileSystem(void)
 {
+	// Before anything else: dvmInit() below brings up libogc2's __io_aram,
+	// whose startup does AR_Init(NULL, 0) unless the AR queue is already up.
+	// That nil table then reads as "already initialised" to every later
+	// AR_CheckInit(), including librw's own gxTierInit, and the first
+	// AR_Alloc from the texel store writes through address zero. Both the
+	// table and the queue have to be ours before dvmInit runs, and the audio
+	// init is far too late: rsINITIALIZE loads textures before it.
+	gcAramInit();
+
 	if(!fileSystemReady){
 		static const DISC_INTERFACE *const sdSlots[] = { &__io_gcsda, &__io_gcsdb };
 		static const char *const sdNames[] = { "SD Gecko slot A", "SD Gecko slot B" };
@@ -1313,7 +1282,7 @@ psInstallFileSystem(void)
 			printf("mount: probing %s...\n", sdNames[i]);
 			// 1MB sector cache (64 pages x 32 sectors); the default is tiny
 			// and the whole game streams through this mount.
-			if(fatMount("dvd", sdSlots[i], 0, 64, 32)){
+			if(mountCard("dvd", sdSlots[i])){
 				fileSystemReady = TRUE;
 				fileSystemIsFat = true;
 				break;
@@ -1732,7 +1701,6 @@ main(int, char *[])
 	// Mirror stdout to OSReport so boot output is readable in an emulator log
 	// (and over USB Gecko on hardware), not just on the framebuffer console.
 	SYS_STDIO_Report(TRUE);
-	gcInstallPanicHandler();
 
 
 	psInitConsole();

@@ -11,6 +11,7 @@
 #include <ogc/aram.h>
 #include <ogc/arqueue.h>
 #include <ogc/cache.h>
+#include <ogc/system.h>
 
 // ---------------------------------------------------------------- ARAM cache
 //
@@ -53,6 +54,8 @@ extern "C" int fsReadSectorsAbs(u32 lba, u32 count, void *dst);   // dvdfs.c raw
 extern "C" lwp_t gMainLwp;   // gamecube.cpp: the main loop's thread
 extern "C" { volatile unsigned gCdTick, gCdState; }   // MemoryWatcher heartbeats: worker loops, 1 while a read is in flight
 extern "C" { extern volatile unsigned gIsoRdBusy; }   // dvdfs.c: sector+1 while a DVD command is in flight
+extern "C" void gcAramInit(void);   // sampman_gamecube.cpp: ARAM's single owner. AR_Init(nil, 0) leaves
+                                    // AR_Alloc's block-length pointer null and the next allocation faults at 0
 
 // ARAM DMA wants both addresses and the length 32-byte aligned. Stream buffers
 // come from RwMallocAlign at sector alignment, so only the length needs
@@ -68,8 +71,7 @@ AramCacheInit(uint32 maxRequestSectors)
 {
 	if(aramReady || maxRequestSectors == 0)
 		return;
-	if(!AR_CheckInit())
-		AR_Init(nil, 0);
+	gcAramInit();
 	ARQ_Init();
 
 	aramSlotBytes = aramAlign32(maxRequestSectors * CDSTREAM_SECTOR_SIZE);

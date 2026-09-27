@@ -56,6 +56,7 @@ else()
         -Wl,--gc-sections
         -Wl,--wrap=__eabi
         -Wl,--wrap=malloc -Wl,--wrap=memalign -Wl,--wrap=calloc -Wl,--wrap=free -Wl,--wrap=realloc
+        -Wl,--allow-multiple-definition   # libogc2 bundles its own malloc; newlib's stdio also defines _malloc_r, and libogc2's wins
         -Wl,-u,gMainWhere)   # keep the watchdog checkpoint symbol through LTO (Dolphin MemoryWatcher reads it by address)
     # The game never throws and never uses typeid or dynamic_cast, but the
     # build was paying for both anyway: __EH_FRAME_BEGIN__ measured 339KB, the

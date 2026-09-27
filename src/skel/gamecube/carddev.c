@@ -27,7 +27,7 @@ typedef struct {
 	int   writable;
 } McFile;
 
-static u8 cardWork[CARD_WORKAREA_SIZE] ATTRIBUTE_ALIGN(32);
+static u8 cardWork[CARD_WORKAREA] ATTRIBUTE_ALIGN(32);
 static int cardMounted;
 static u32 cardSector;
 

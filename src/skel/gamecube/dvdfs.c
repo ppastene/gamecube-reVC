@@ -162,16 +162,28 @@ void fsDiscStatsPrint(void)
 }
 
 
+/* Dolphin-only: force attempt 0 to take the retry path once, so the re-issue
+ * code runs in the emulator (the natural trigger — slow real/Swiss media —
+ * only occurs on hardware). Build with -DFS_FORCE_RETRY=1 for a boot check. */
+#ifndef FS_FORCE_RETRY
+#define FS_FORCE_RETRY 0
+#endif
+
 static int fsDvdRead(u32 sector, u32 count, void *dst)
 {
-	static dvdcmdblk blk;                 /* callers hold m->lock: one at a time */
+	/* One block per attempt: the 1.5s timeout does NOT cancel the command,
+	 * and re-issuing into a block the DVD engine still owns re-links its node
+	 * and wedges libogc — the real-hardware freeze at the mount's first read
+	 * (DOL-101 via Swiss, "re-issue 0" then silent). A stale completion lands
+	 * in its own slot and is dropped. */
+	static dvdcmdblk blks[8];             /* callers hold m->lock: one at a time */
 	gIsoRdBusy = sector + 1;
 	int jump = sector != gIsoRdNext;
 	if(jump) gIsoRdJumps++;
 	gIsoRdNext = sector + count;
 	int src = gSrcAbs ? SRC_AUD : (gImgEnd && sector >= gImgLba && sector < gImgEnd) ? SRC_IMG : SRC_OTH;
 	for(int attempt = 0; attempt < 8; attempt++){
-		if(DVD_ReadAbsAsyncPrio(&blk, dst, count * FS_SECTOR,
+		if(DVD_ReadAbsAsyncPrio(&blks[attempt], dst, count * FS_SECTOR,
 		                        (s64)sector * FS_SECTOR, NULL, 2) < 0){
 			usleep(2000);
 			continue;
@@ -179,8 +191,9 @@ static int fsDvdRead(u32 sector, u32 count, void *dst)
 		u64 t0 = gettime();
 		if(!gDiscFirstTime) gDiscFirstTime = t0;
 		gDiscCommands++;
+		int forced = FS_FORCE_RETRY && attempt == 0;   /* Dolphin-only: walk the retry path */
 		for(;;){
-			s32 st = DVD_GetCmdBlockStatus(&blk);
+			s32 st = DVD_GetCmdBlockStatus(&blks[attempt]);
 			if(st == DVD_STATE_END){
 				u32 elapsed = diff_msec(t0, gettime());
 				gDiscBytes += count * FS_SECTOR;
@@ -198,7 +211,8 @@ static int fsDvdRead(u32 sector, u32 count, void *dst)
 			}
 			if(st == DVD_STATE_FATAL_ERROR)
 				break;
-			if(diff_msec(t0, gettime()) > 1500){
+			if(forced || diff_msec(t0, gettime()) > 1500){
+				forced = 0;
 				gIsoRdTimeouts++;
 				printf("DVD: read %u+%u silent 1.5s, re-issue %d\n",
 				       (unsigned)sector, (unsigned)count, attempt);
@@ -698,7 +712,7 @@ bool ISO9660_MountDbg(const char *name, const DISC_INTERFACE *disc)
 	FsMount *m = &gMount;
 	if(m->ent)
 		return false;
-	if(!disc->startup()){
+	if(!disc->startup((DISC_INTERFACE *)disc)){
 		snprintf(isoMountErr, sizeof isoMountErr, "disc startup failed");
 		printf("dvdfs: disc startup failed\n");
 		return false;
