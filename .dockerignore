@@ -1,6 +1,7 @@
 .git
 build
 assets
+out
 research
 toolchain
 dolphin-*

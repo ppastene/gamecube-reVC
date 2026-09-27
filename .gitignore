@@ -369,6 +369,9 @@ src/extras/GitSHA1.cpp
 assets/*
 !assets/README.md
 
+# Output of files from Dockerfile
+/out 
+
 # Private research material (disc images, disassembly); never published.
 /research/
 .DS_Store
